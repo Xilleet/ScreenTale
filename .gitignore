@@ -5,6 +5,8 @@ easyocr_models/
 Кэш линтера Ruff и отчеты
 .ruff_cache/
 ruff_report.txt
+check.bat
+ruff.toml
 
 # Логи и блокировки
 app.log
@@ -39,4 +41,5 @@ env/
 # Системные файлы
 # ========================
 .DS_Store
-Thumbs.db
+Thumbs.dbcheck.bat 
+ruff.toml 
