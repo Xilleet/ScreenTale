@@ -41,5 +41,4 @@ env/
 # Системные файлы
 # ========================
 .DS_Store
-Thumbs.dbcheck.bat 
-ruff.toml 
+Thumbs.db
