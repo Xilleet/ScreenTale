@@ -1,0 +1,655 @@
+import os
+import sys
+
+from PySide6.QtCore import Qt, QTimer, qVersion
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QScrollArea,
+    QSlider,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from backend.config import APP_VERSION, get_app_dir
+from backend.hotkeys import HotkeyManager
+from backend.logging_setup import set_verbose
+from backend.translators import ENGINE_LABELS
+from frontend.theme import PALETTE, apply_theme
+from frontend.widgets import (
+    BusyBar,
+    HotkeyRecorder,
+    SegmentedControl,
+    StatusPill,
+    Toast,
+    ToggleSwitch,
+)
+
+TRANSLATORS = [
+    ("google", "Google"),
+    ("mymemory", "MyMemory"),
+    ("opus", "Opus-MT"),
+    ("nllb", "NLLB-200"),
+]
+
+TRANSLATOR_HINTS = {
+    "google": "Онлайн-сервис Google. Требуется интернет, качество хорошее.",
+    "mymemory": "Онлайн-сервис MyMemory. Есть лимиты запросов, качество среднее.",
+    "opus": "Локальная модель Opus-MT (~300 МБ). Только en→ru, работает офлайн.",
+    "nllb": "Локальная модель NLLB-200 (~2.5 ГБ). Работает офлайн, качество выше.",
+}
+
+
+class SettingsWindow(QWidget):
+    HOTKEY_ACTIONS = (
+        ("single", "Перевести выделенную область"),
+        ("auto", "Авто-перевод: вкл/выкл"),
+        ("toggle_window", "Показать/скрыть окно перевода"),
+        ("stop", "Остановить текущий перевод"),
+        ("clear", "Очистить историю переводов"),
+    )
+
+    def __init__(self, settings, hotkeys: HotkeyManager, on_exit=None, hide_on_close=True):
+        super().__init__()
+        self.settings = settings
+        self.hotkeys = hotkeys
+        self.on_exit = on_exit
+        self._hide_on_close = hide_on_close
+        self._action_titles = dict(self.HOTKEY_ACTIONS)
+        self._gpu_available = True
+
+        self.setWindowTitle("ScreenTale — Настройки")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedSize(760, 580)
+
+        self._drag_pos = None
+
+        # Внешний контейнер со скруглёнными углами и рамкой
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self.container = QFrame()
+        self.container.setObjectName("SettingsContainer")
+        outer_layout.addWidget(self.container)
+
+        root = QHBoxLayout(self.container)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_sidebar())
+
+        # Правая часть: верхняя панель с кнопками + контент страниц
+        right_panel = QWidget()
+        rv = QVBoxLayout(right_panel)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
+        rv.addWidget(self._build_top_bar())
+        rv.addWidget(self._build_content(), 1)
+
+        root.addWidget(right_panel, 1)
+
+        self.toast = Toast(self, left_offset=200)
+        self._saved_timer = QTimer(self)
+        self._saved_timer.setSingleShot(True)
+        self._saved_timer.setInterval(450)
+        self._saved_timer.timeout.connect(lambda: self.toast.show_toast("Настройки сохранены"))
+
+        self.settings.changed.connect(self._on_setting_changed)
+        self._sync_from_settings()
+
+# Включаем нативное скругление углов и тень Windows 11
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                # DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2
+                val = ctypes.c_int(2)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    int(self.winId()), 33, ctypes.byref(val), ctypes.sizeof(val)
+                )
+            except Exception:
+                pass
+
+    def _build_top_bar(self):
+        """Верхняя плашка с кнопками «Свернуть» и «Закрыть»."""
+        top_bar = QWidget()
+        top_bar.setFixedHeight(38)
+        h = QHBoxLayout(top_bar)
+        h.setContentsMargins(0, 5, 8, 0)
+        h.setSpacing(4)
+        h.addStretch(1)
+
+        btn_min = QPushButton("—")
+        btn_min.setObjectName("WinBtn")
+        btn_min.setToolTip("Свернуть")
+        btn_min.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_min.clicked.connect(self.showMinimized)
+
+        btn_close = QPushButton("✕")
+        btn_close.setObjectName("WinBtnClose")
+        btn_close.setToolTip("Закрыть в трей")
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.clicked.connect(self.hide)
+
+        h.addWidget(btn_min)
+        h.addWidget(btn_close)
+        return top_bar
+
+    # ---------------- каркас ----------------
+    def _build_sidebar(self):
+        frame = QFrame()
+        frame.setObjectName("Sidebar")
+        frame.setFixedWidth(200)
+        v = QVBoxLayout(frame)
+        v.setContentsMargins(14, 18, 14, 14)
+        v.setSpacing(4)
+
+        title = QLabel("ScreenTale")
+        title.setObjectName("AppTitle")
+        ver = QLabel(f"версия {APP_VERSION}")
+        ver.setObjectName("Version")
+        v.addWidget(title)
+        v.addWidget(ver)
+        v.addSpacing(12)
+
+        self.nav = QListWidget()
+        self.nav.setObjectName("Nav")
+        for name in ("Общие", "Перевод", "Горячие клавиши", "О программе"):
+            self.nav.addItem(QListWidgetItem(name))
+        v.addWidget(self.nav, 1)
+
+        btn_exit = QPushButton("Выйти из программы")
+        btn_exit.setObjectName("Danger")
+        btn_exit.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_exit.clicked.connect(self._handle_exit)
+        v.addWidget(btn_exit)
+        return frame
+
+    def _build_content(self):
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self._wrap(self._page_general()))
+        self.pages.addWidget(self._wrap(self._page_translation()))
+        self.pages.addWidget(self._wrap(self._page_hotkeys()))
+        self.pages.addWidget(self._wrap(self._page_about()))
+        self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.nav.setCurrentRow(0)
+        return self.pages
+
+    def _wrap(self, page):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(page)
+        return scroll
+
+    # ---------------- хелперы ----------------
+    def _card(self, title=None):
+        card = QFrame()
+        card.setObjectName("Card")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(16, 14, 16, 16)
+        v.setSpacing(10)
+        if title:
+            t = QLabel(title)
+            t.setObjectName("CardTitle")
+            v.addWidget(t)
+        return card, v
+
+    def _option_row(self, text, control, hint=None):
+        w = QWidget()
+        w.setObjectName("Row")
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(10)
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(2)
+        left.addWidget(QLabel(text))
+        if hint:
+            hl = QLabel(hint)
+            hl.setObjectName("Hint")
+            hl.setWordWrap(True)
+            left.addWidget(hl)
+        h.addLayout(left, 1)
+        h.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+        return w
+
+    def _page(self):
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(24, 20, 24, 20)
+        v.setSpacing(14)
+        return page, v
+
+    # ---------------- страница: Общие ----------------
+    def _page_general(self):
+        page, v = self._page()
+
+        card, cv = self._card("Внешний вид")
+
+        self.theme_seg = SegmentedControl([
+            ("dark", "Янтарная"),
+            ("dark_classic", "Тёмная"),
+            ("light", "Светлая")
+        ])
+        self.theme_seg.setMinimumWidth(260)
+        cv.addWidget(self._option_row("Тема оформления", self.theme_seg))
+        self.theme_seg.valueChanged.connect(self._on_theme_changed)
+        frow = QWidget()
+        frow.setObjectName("Row")
+        fh = QHBoxLayout(frow)
+        fh.setContentsMargins(0, 0, 0, 0)
+        fh.setSpacing(10)
+        fh.addWidget(QLabel("Размер шрифта"))
+        fh.addStretch(1)
+        self.font_slider = QSlider(Qt.Orientation.Horizontal)
+        self.font_slider.setRange(10, 28)
+        self.font_slider.setMinimumWidth(200)
+        self.font_val = QLabel("14")
+        self.font_val.setObjectName("Hint")
+        self.font_val.setFixedWidth(26)
+        self.font_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        fh.addWidget(self.font_slider)
+        fh.addWidget(self.font_val)
+        cv.addWidget(frow)
+
+        self.preview_frame = QFrame()
+        self.preview_frame.setObjectName("Preview")
+        pv = QVBoxLayout(self.preview_frame)
+        pv.setContentsMargins(14, 10, 14, 10)
+        self.preview_label = QLabel(
+            "The quick brown fox jumps over the lazy dog.\n"
+            "Быстрый перевод текста с экрана — 0123.")
+        self.preview_label.setWordWrap(True)
+        pv.addWidget(self.preview_label)
+        cv.addWidget(self.preview_frame)
+
+        orow = QWidget()
+        orow.setObjectName("Row")
+        oh = QHBoxLayout(orow)
+        oh.setContentsMargins(0, 0, 0, 0)
+        oh.setSpacing(10)
+        oh.addWidget(QLabel("Прозрачность окна перевода"))
+        oh.addStretch(1)
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(40, 100)
+        self.opacity_slider.setMinimumWidth(200)
+        self.opacity_val = QLabel("95 %")
+        self.opacity_val.setObjectName("Hint")
+        self.opacity_val.setFixedWidth(38)
+        self.opacity_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        oh.addWidget(self.opacity_slider)
+        oh.addWidget(self.opacity_val)
+        cv.addWidget(orow)
+
+        v.addWidget(card)
+
+        card2, c2 = self._card("Поведение")
+        self.autocopy_toggle = ToggleSwitch()
+        c2.addWidget(self._option_row(
+            "Копировать перевод в буфер обмена",
+            self.autocopy_toggle,
+            "Результат перевода всегда доступен по Ctrl+V."))
+        v.addWidget(card2)
+        v.addStretch(1)
+
+        self.font_slider.valueChanged.connect(self._on_font_slider)
+        self.opacity_slider.valueChanged.connect(self._on_opacity_slider)
+        self.autocopy_toggle.toggled.connect(self._on_autocopy)
+        return page
+
+    def _on_theme_changed(self, ident):
+        apply_theme(QApplication.instance(), ident)
+        self._update_preview_font(self.font_slider.value())  # перечитать цвет текста превью
+        self.settings.set("theme", ident)
+        self._saved_timer.start()
+
+    def _on_font_slider(self, value):
+        self.font_val.setText(str(value))
+        self._update_preview_font(value)
+        self.settings.set("font_size", value)
+        self._saved_timer.start()
+
+    def _update_preview_font(self, size):
+        self.preview_label.setStyleSheet(
+            f"font-size: {int(size)}px; color: {PALETTE['text']};")
+
+    def _on_opacity_slider(self, value):
+        self.opacity_val.setText(f"{value} %")
+        self.settings.set("opacity", value / 100.0)
+        self._saved_timer.start()
+
+    def _on_autocopy(self, checked):
+        self.settings.set("auto_copy", bool(checked))
+        self._saved_timer.start()
+
+    def _on_verbose_toggled(self, checked):
+        self.settings.set("verbose_log", bool(checked))
+        set_verbose(bool(checked))   # сразу применить к глобальному флагу logging_setup
+        if checked:
+            self.toast.show_toast(
+                "Подробный лог включён — не забудь выключить после отладки",
+                ms=4000)
+        else:
+            self._saved_timer.start()
+
+    # ---------------- страница: Перевод ----------------
+    def _page_translation(self):
+        page, v = self._page()
+
+        card, cv = self._card("Движок перевода")
+        self.translator_seg = SegmentedControl(TRANSLATORS)
+        cv.addWidget(self.translator_seg)
+        self.translator_hint = QLabel()
+        self.translator_hint.setObjectName("Hint")
+        self.translator_hint.setWordWrap(True)
+        cv.addWidget(self.translator_hint)
+        self.model_pill = StatusPill()
+        self.model_pill.set_state("off", "Локальная модель не загружена")
+        cv.addWidget(self.model_pill)
+
+        self.model_bar = BusyBar()
+        self.model_bar.hide()
+        cv.addWidget(self.model_bar)
+
+        self.model_hint = QLabel("")
+        self.model_hint.setObjectName("Hint")
+        self.model_hint.setWordWrap(True)
+        self.model_hint.hide()
+        cv.addWidget(self.model_hint)
+        self.translator_seg.valueChanged.connect(self._on_translator_changed)
+        v.addWidget(card)
+
+        card2, c2 = self._card("Производительность")
+        self.gpu_toggle = ToggleSwitch()
+        c2.addWidget(self._option_row(
+            "Ускорение на GPU (NVIDIA CUDA)",
+            self.gpu_toggle,
+            "Переключение перезапускает OCR-движок. Требуется CUDA."))
+        self.gpu_pill = StatusPill()
+        c2.addWidget(self.gpu_pill)
+        self.gpu_bar = BusyBar()
+        self.gpu_bar.hide()
+        c2.addWidget(self.gpu_bar)
+        self.gpu_toggle.toggled.connect(self._on_gpu_toggled)
+        v.addWidget(card2)
+        v.addStretch(1)
+        return page
+
+    def _on_translator_changed(self, ident):
+        self.translator_hint.setText(TRANSLATOR_HINTS.get(ident, ""))
+        self.settings.set("translator", ident)
+        self._saved_timer.start()
+        # TODO(этап 2): контроллер подписан на settings.changed('translator')
+        # и в QThread загрузит/выгрузит локальную модель (с прогрессом в gpu_bar).
+
+    def _on_gpu_toggled(self, checked):
+        self.gpu_toggle.setEnabled(False)
+        self.gpu_bar.start_indeterminate()
+        self.gpu_pill.set_state("busy", "Перезапуск OCR-движка…")
+        self.settings.set("gpu", bool(checked))
+        # Завершение придёт извне: контроллер -> gpu_apply_finished()
+
+    def gpu_apply_finished(self, success: bool, is_gpu: bool, message: str = ""):
+        """Шов для бэкенда: OCR-воркер закончил переключение."""
+        self.gpu_toggle.setEnabled(self._gpu_available)
+        self.gpu_bar.hide()
+        self.gpu_toggle.blockSignals(True)
+        self.gpu_toggle.setChecked(bool(is_gpu))
+        self.gpu_toggle.blockSignals(False)
+        if success and is_gpu:
+            self.gpu_pill.set_state("ok", "GPU: ускорение активно")
+        elif success:
+            self.gpu_pill.set_state("off", "CPU: стандартный режим")
+        else:
+            self.gpu_pill.set_state("error", f"Ошибка: {message}")
+            
+        # ---------------- статус локальной модели (швы для контроллера) ----------------
+    def model_load_started(self):
+        self.model_pill.set_state("busy", "Загрузка локальной модели…")
+        self.model_hint.show()
+        self.model_hint.setText("Подготовка…")
+        self.model_bar.show()
+        self.model_bar.start_indeterminate()
+
+    def model_progress(self, percent, label):
+        if not self.model_bar.isVisible():
+            self.model_bar.show()
+            self.model_hint.show()
+        if percent < 0:
+            self.model_bar.start_indeterminate()
+        else:
+            self.model_bar.set_value(percent)
+        self.model_hint.setText(label)
+
+    def model_finished(self, state, message):
+        self.model_bar.hide()
+        self.model_hint.hide()
+        self.model_pill.set_state(state, message)
+
+    def model_loaded(self, engine_id):
+        self.model_finished("ok", f"Модель готова: {ENGINE_LABELS.get(engine_id, engine_id)}")
+
+    def model_failed(self, engine_id, error):
+        self.model_finished("error", f"Ошибка загрузки модели: {error}")
+
+    def set_gpu_available(self, available: bool):
+        """Вызывается, когда OCR-воркер проверил наличие CUDA."""
+        self._gpu_available = bool(available)
+        if available:
+            self.gpu_toggle.setEnabled(True)
+            self.gpu_toggle.setToolTip("")
+            return
+        self.gpu_toggle.blockSignals(True)
+        self.gpu_toggle.setChecked(False)
+        self.gpu_toggle.setEnabled(False)
+        self.gpu_toggle.blockSignals(False)
+        self.gpu_toggle.setToolTip("CUDA не обнаружена — доступен только CPU")
+
+    # ---------------- страница: Горячие клавиши ----------------
+    def _page_hotkeys(self):
+        page, v = self._page()
+        card, cv = self._card("Горячие клавиши")
+
+        hint = QLabel("Кликните по кнопке и нажмите новое сочетание. Esc — отмена. "
+                      "Нужен Ctrl или Alt (либо F-клавиша).")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        cv.addWidget(hint)
+
+        self.recorders = {}
+        for action, title in self.HOTKEY_ACTIONS:
+            rec = HotkeyRecorder()
+            rec.sequenceCaptured.connect(
+                lambda label, mods, vk, a=action: self._apply_hotkey(a, label, mods, vk))
+            self.recorders[action] = rec
+            cv.addWidget(self._option_row(title, rec))
+
+        reset_row = QWidget()
+        reset_row.setObjectName("Row")
+        rh = QHBoxLayout(reset_row)
+        rh.setContentsMargins(0, 0, 0, 0)
+        rh.addStretch(1)
+        btn_reset = QPushButton("Вернуть стандартные")
+        btn_reset.setObjectName("Ghost")
+        btn_reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_reset.clicked.connect(self._reset_hotkeys)
+        rh.addWidget(btn_reset)
+        cv.addWidget(reset_row)
+
+        v.addWidget(card)
+        v.addStretch(1)
+        return page
+
+    def _apply_hotkey(self, action, label, mods, vk):
+        rec = self.recorders[action]
+        old = dict(self.settings.get("hotkeys")[action])
+
+        conflict = next(
+            (a for a, hk in self.settings.get("hotkeys").items()
+             if a != action and hk["mods"] == mods and hk["vk"] == vk),
+            None)
+        if conflict:
+            rec.set_display(old["label"])
+            rec.show_error(f"Уже занято: «{self._action_titles.get(conflict, conflict)}»")
+            return
+
+        self.hotkeys.unregister(action)
+        if self.hotkeys.register(action, mods, vk):
+            self.settings.set_hotkey(action, label, mods, vk)
+            self._saved_timer.start()
+        else:
+            self.hotkeys.register(action, old["mods"], old["vk"])
+            rec.set_display(old["label"])
+            rec.show_error("Сочетание занято другой программой")
+
+    def _reset_hotkeys(self):
+        self.hotkeys.shutdown()
+        self.settings.reset_defaults(["hotkeys"])   # changed -> обновит рекордеры
+        report = self.hotkeys.apply_all(self.settings.get("hotkeys"))
+        if not all(report.values()):
+            self.toast.show_toast("Часть стандартных сочетаний занята другими программами")
+        else:
+            self._saved_timer.start()
+
+    # ---------------- страница: О программе ----------------
+    def _page_about(self):
+        page, v = self._page()
+        card, cv = self._card("О программе")
+
+        cv.addWidget(QLabel(f"ScreenTale {APP_VERSION}"))
+        cv.addWidget(QLabel(f"Python {os.sys.version.split()[0]} · PySide6 · Qt {qVersion()}"))
+
+        btns = QWidget()
+        btns.setObjectName("Row")
+        bh = QHBoxLayout(btns)
+        bh.setContentsMargins(0, 0, 0, 0)
+        b_folder = QPushButton("Открыть папку приложения")
+        b_folder.setObjectName("Ghost")
+        b_folder.clicked.connect(lambda: os.startfile(get_app_dir()))
+        b_sysinfo = QPushButton("Скопировать данные о системе")
+        b_sysinfo.setObjectName("Ghost")
+        b_sysinfo.clicked.connect(self._copy_sysinfo)
+        bh.addWidget(b_folder)
+        bh.addWidget(b_sysinfo)
+        bh.addStretch(1)
+        cv.addWidget(btns)
+
+        card_diag, cv_diag = self._card("Диагностика")
+        self.verbose_toggle = ToggleSwitch()
+        cv_diag.addWidget(self._option_row(
+            "Подробный лог (для отладки)",
+            self.verbose_toggle,
+            "В app.log пишется полный текст OCR и переводов без обрезки. "
+            "Включи, если что-то сломалось — пришли log автору. "
+            "Не забудь выключить после отладки."))
+        self.verbose_toggle.toggled.connect(self._on_verbose_toggled)
+
+        # 🥚 Пасхалка: карточка благодарности тестировщику
+        card_thanks, cv_thanks = self._card("Особая благодарность")
+        thanks = QLabel(
+            "Главному тестировщику — за выдержку, мужество и страдания в версии 0.4."
+        )
+        thanks.setObjectName("Hint")
+        thanks.setWordWrap(True)
+        cv_thanks.addWidget(thanks)
+
+        v.addWidget(card)
+        v.addWidget(card_diag)
+        v.addWidget(card_thanks)
+        v.addStretch(1)
+        return page
+
+    def _copy_sysinfo(self):
+        from PySide6 import __version__ as pyside_ver
+        QApplication.instance().clipboard().setText(
+            f"ScreenTale {APP_VERSION}\n"
+            f"Python: {os.sys.version.split()[0]}\n"
+            f"PySide6: {pyside_ver}\nQt: {qVersion()}")
+        self.toast.show_toast("Скопировано в буфер обмена")
+
+    # ---------------- реакция на settings.changed ----------------
+    def _sync_from_settings(self):
+        self.theme_seg.set_value(self.settings.get("theme", "dark"))
+        self._on_setting_changed("font_size", self.settings.get("font_size"))
+        self._on_setting_changed("opacity", self.settings.get("opacity"))
+        self._on_setting_changed("auto_copy", self.settings.get("auto_copy"))
+        self._on_setting_changed("translator", self.settings.get("translator"))
+        self._on_setting_changed("hotkeys", self.settings.get("hotkeys"))
+        self._on_setting_changed("verbose_log", self.settings.get("verbose_log"))
+        is_gpu = bool(self.settings.get("gpu"))
+        self.gpu_toggle.blockSignals(True)
+        self.gpu_toggle.setChecked(is_gpu)
+        self.gpu_toggle.blockSignals(False)
+        self.gpu_pill.set_state("ok" if is_gpu else "off",
+                                "GPU: ускорение активно" if is_gpu else "CPU: стандартный режим")
+
+    def _on_setting_changed(self, key, value):
+        if key == "font_size":
+            self.font_slider.blockSignals(True)
+            self.font_slider.setValue(int(value))
+            self.font_val.setText(str(value))
+            self.font_slider.blockSignals(False)
+            self._update_preview_font(int(value))
+        elif key == "opacity":
+            pct = round(value * 100)
+            self.opacity_slider.blockSignals(True)
+            self.opacity_slider.setValue(pct)
+            self.opacity_val.setText(f"{pct} %")
+            self.opacity_slider.blockSignals(False)
+        elif key == "auto_copy":
+            self.autocopy_toggle.blockSignals(True)
+            self.autocopy_toggle.setChecked(bool(value))
+            self.autocopy_toggle.blockSignals(False)
+        elif key == "translator":
+            self.translator_seg.set_value(value)
+            self.translator_hint.setText(TRANSLATOR_HINTS.get(value, ""))
+        elif key == "hotkeys" or key.startswith("hotkeys."):
+            hks = self.settings.get("hotkeys")
+            for action, rec in self.recorders.items():
+                rec.set_display(hks.get(action, {}).get("label", "—"))
+        elif key == "verbose_log":
+            self.verbose_toggle.blockSignals(True)
+            self.verbose_toggle.setChecked(bool(value))
+            self.verbose_toggle.blockSignals(False)
+            set_verbose(bool(value))   # синхронизировать глобальный флаг
+
+    # ---------------- служебное ----------------
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.toast.reposition()
+
+    def closeEvent(self, event):
+        if self._hide_on_close:
+            event.ignore()
+            self.hide()
+        else:
+            event.accept()
+
+    def _handle_exit(self):
+        self.settings.save()
+        if self.on_exit:
+            self.on_exit()
+        else:
+            QApplication.instance().quit()
+
+    # ---------------- перетаскивание окна (Drag) ----------------
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.pos()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos and (event.buttons() & Qt.MouseButton.LeftButton):
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+        event.accept()

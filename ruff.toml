@@ -1,0 +1,24 @@
+target-version = "py310"
+
+exclude = [
+    "hf_cache",
+    "easyocr_models",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist"
+]
+
+[lint]
+# Отключаем правила, мешающие работе GUI/Windows-специфичного кода:
+# BLE001 - запрет except Exception (в GUI он нужен для стабильности)
+# S110 - запрет try-except-pass (нужен для fallback ctypes/Aero)
+# SIM115 - требование with open (для глобального log-файла не подходит)
+# E501 - ограничение длины строки (для QSS стилей)
+ignore = [
+    "BLE001",
+    "S110",
+    "SIM115",
+    "E501"
+]
