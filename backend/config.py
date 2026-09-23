@@ -6,7 +6,7 @@ import sys
 
 from PySide6.QtCore import QObject, Signal
 
-APP_VERSION = "0.4.3"
+APP_VERSION = "0.4.4-dev"
 
 
 def get_app_dir() -> str:
@@ -38,6 +38,7 @@ DEFAULTS = {
         "toggle_window": {"label": "Ctrl+`", "mods": 0x0002, "vk": 0xC0},
         "stop":          {"label": "Alt+C",  "mods": 0x0001, "vk": 0x43},
         "clear":         {"label": "Alt+X",  "mods": 0x0001, "vk": 0x58},
+        "ghost":         {"label": "Alt+G",  "mods": 0x0001, "vk": 0x47},
     },
 }
 

@@ -1,13 +1,17 @@
 """Окно перевода: стеклянная плашка (Aero blur), drag, ресайз, история."""
 import ctypes
+import sys
+from ctypes import wintypes
 
-from PySide6.QtCore import QPropertyAnimation, QRect, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QTextCursor
+from PySide6.QtCore import QPoint, QPropertyAnimation, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -20,34 +24,87 @@ MIN_W = 100
 MIN_H = 60
 MAX_HISTORY_LINES = 60
 HISTORY_TRIM_INTERVAL_MS = 150_000
-NOTICE_TOAST_MS = 2000        # короткая вспышка, чтобы привлечь внимание
-STATUS_AUTO_RESET_OK_MS = 1500   # «Готово» → «Ожидание» через 1.5 сек
-STATUS_AUTO_RESET_ERR_MS = 3000  # «Ошибка» → «Ожидание» через 3 сек
+NOTICE_TOAST_MS = 2000
+STATUS_AUTO_RESET_OK_MS = 1500
+STATUS_AUTO_RESET_ERR_MS = 3000
 
 
-def apply_blur_effect(hwnd):
-    """Нативное системное размытие фона Windows под окном (Win 10/11)."""
-    try:
-        class ACCENT_POLICY(ctypes.Structure):
-            _fields_ = [("AccentState", ctypes.c_int), ("AccentFlags", ctypes.c_int),
-                        ("GradientColor", ctypes.c_int), ("AnimationId", ctypes.c_int)]
+# ============================================================
+# Плавающий мини-тулбар (Ghost Toolbar)
+# ============================================================
+class _FloatingToolbar(QFrame):
+    retry_clicked = Signal()
+    stop_clicked = Signal()
+    clear_clicked = Signal()
+    ghost_clicked = Signal()
 
-        class WINDOWCOMPOSITIONATTRIBDATA(ctypes.Structure):
-            _fields_ = [("Attribute", ctypes.c_int), ("Data", ctypes.c_void_p),
-                        ("SizeOfData", ctypes.c_size_t)]
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("FloatingToolbar")
+        self.setStyleSheet("""
+            QFrame#FloatingToolbar {
+                background: rgba(26, 24, 22, 230);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 7px;
+            }
+            QPushButton#ToolbarBtn {
+                background: transparent;
+                border: none;
+                border-radius: 4px;
+                color: #9c9388;
+                font-size: 13px;
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 22px;
+                max-height: 22px;
+                padding: 0;
+            }
+            QPushButton#ToolbarBtn:hover {
+                background: rgba(224, 142, 69, 0.25);
+                color: #f2ede4;
+            }
+            QPushButton#ToolbarBtn[active="true"] {
+                background: #e08e45;
+                color: #1a1816;
+            }
+        """)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(2)
 
-        accent = ACCENT_POLICY()
-        accent.AccentState = 4          # ACCENT_ENABLE_BLURBEHIND, было accent.AccentState = 3 
-        accent.AccentFlags = 2
-        accent.GradientColor = 0x01000000
+        self.btn_retry = QPushButton("↻")
+        self.btn_retry.setObjectName("ToolbarBtn")
+        self.btn_retry.setToolTip("Повторить распознавание (Alt+R)")
+        self.btn_retry.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_retry.clicked.connect(self.retry_clicked.emit)
 
-        data = WINDOWCOMPOSITIONATTRIBDATA()
-        data.Attribute = 19             # WCA_ACCENT_POLICY
-        data.Data = ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p)
-        data.SizeOfData = ctypes.sizeof(accent)
-        ctypes.windll.user32.SetWindowCompositionAttribute(int(hwnd), ctypes.byref(data))
-    except Exception:
-        pass
+        self.btn_stop = QPushButton("■")
+        self.btn_stop.setObjectName("ToolbarBtn")
+        self.btn_stop.setToolTip("Остановить перевод (Alt+C)")
+        self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop.clicked.connect(self.stop_clicked.emit)
+
+        self.btn_clear = QPushButton("🗑")
+        self.btn_clear.setObjectName("ToolbarBtn")
+        self.btn_clear.setToolTip("Очистить историю (Alt+X)")
+        self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear.clicked.connect(self.clear_clicked.emit)
+
+        self.btn_ghost = QPushButton("👻")
+        self.btn_ghost.setObjectName("ToolbarBtn")
+        self.btn_ghost.setToolTip("Сквозной клик в игру (Alt+G)")
+        self.btn_ghost.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ghost.clicked.connect(self.ghost_clicked.emit)
+
+        lay.addWidget(self.btn_retry)
+        lay.addWidget(self.btn_stop)
+        lay.addWidget(self.btn_clear)
+        lay.addWidget(self.btn_ghost)
+
+    def set_ghost_active(self, active: bool):
+        self.btn_ghost.setProperty("active", bool(active))
+        self.btn_ghost.style().unpolish(self.btn_ghost)
+        self.btn_ghost.style().polish(self.btn_ghost)
 
 
 class ResizeGrip(QWidget):
@@ -117,18 +174,14 @@ class CustomTextEdit(QTextEdit):
 
 
 class _NoticeToast(QLabel):
-    """Тонкий toast в верхней части окна перевода для служебных сообщений.
-
-    Автоматически гаснет через NOTICE_TOAST_MS (4 сек) с fade-анимацией.
-    Не блокирует QTextEdit — поверх, в углу. Поднимается raise_().
-    """
     def __init__(self, parent):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # Ставим стиль под янтарную тему и аккуратную высоту
         self.setStyleSheet(
-            "QLabel { background: rgba(33, 36, 41, 220); color: #e8ecf1; "
-            "border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; "
-            "padding: 6px 12px; font-size: 12px; }")
+            "QLabel { background: rgba(26, 24, 22, 230); color: #f2ede4; "
+            "border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 7px; "
+            "padding: 3px 10px; font-size: 12px; }")
         self.hide()
         self._effect = QGraphicsOpacityEffect(self)
         self._effect.setOpacity(0.0)
@@ -143,14 +196,16 @@ class _NoticeToast(QLabel):
     def show_notice(self, text, ms=NOTICE_TOAST_MS):
         self.setText(text)
         self.adjustSize()
-        # Ширина не больше 90% ширины родителя
         parent = self.parentWidget()
         if parent:
-            max_w = parent.width() - 2 * SHADOW_MARGIN - 24
+            # Ограничиваем ширину, чтобы не наезжать на тулбар справа
+            max_w = parent.width() - 2 * SHADOW_MARGIN - 130
             if self.width() > max_w:
                 self.setFixedWidth(max_w)
                 self.setWordWrap(True)
-            self.move((parent.width() - self.width()) // 2, SHADOW_MARGIN + 6)
+                self.adjustSize()
+            # Сажаем тост ровно в верхнюю парящую зону вровень с тулбаром
+            self.move((parent.width() - self.width()) // 2, SHADOW_MARGIN)
         self.show()
         self.raise_()
         self._anim.stop()
@@ -171,6 +226,10 @@ class _NoticeToast(QLabel):
 
 
 class TranslateWindow(QWidget):
+    retry_requested = Signal()
+    stop_requested = Signal()
+    clear_requested = Signal()
+
     def __init__(self, settings):
         super().__init__()
         self.setWindowFlags(
@@ -180,18 +239,16 @@ class TranslateWindow(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMinimumSize(MIN_W, MIN_H)
-        self.resize(420, 120)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
 
         self._move_pos = None
         self.force_hidden = False
-        # Запретная зона для drag'а — bbox OCR в авто-режиме.
-        # Устанавливается из AppController через set_forbidden_rect().
-        # При drag'е окно "прилипает" к границе снаружи, не заходя внутрь.
         self._forbidden_rect = None
+        self._ghost_mode = False
 
+        # добавляем 22px сверху под плавающее ушко:
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN)
+        outer.setContentsMargins(SHADOW_MARGIN, SHADOW_MARGIN + 28, SHADOW_MARGIN, SHADOW_MARGIN)
         outer.setSpacing(0)
 
         self.border_frame = QFrame()
@@ -226,32 +283,73 @@ class TranslateWindow(QWidget):
         frame_layout.addWidget(self.text_widget)
 
         self.grip = ResizeGrip(self)
-        self.grip.raise_()
-
-        # Toast для служебных сообщений (в верхней части окна)
         self._notice_toast = _NoticeToast(self)
 
-        # StatusPill в нижнем левом углу: ожидание / перевод / готово / ошибка
         self.status_pill = StatusPill(self)
         self.status_pill.set_state("off", "Ожидание")
 
-        # Таймер авто-сброса статуса (single-shot): «Готово» → «Ожидание»
-        # через 1.5 сек, «Ошибка» → «Ожидание» через 3 сек
         self._status_reset_timer = QTimer(self)
         self._status_reset_timer.setSingleShot(True)
         self._status_reset_timer.timeout.connect(self._reset_status_to_off)
 
-        #apply_blur_effect(self.winId()) - закомментировано потому что нормально не блюрилось, оставлено на всякий
-
-        # Тримминг истории — само окно, контроллеру делать нечего
         self._trim_timer = QTimer(self)
         self._trim_timer.timeout.connect(self._cleanup_history)
         self._trim_timer.start(HISTORY_TRIM_INTERVAL_MS)
 
-        # Подписка на настройки вместо колбэков контроллера
+        # Плавающий тулбар
+        self.toolbar = _FloatingToolbar(self)
+        self.toolbar.retry_clicked.connect(self.retry_requested.emit)
+        self.toolbar.stop_clicked.connect(self.stop_requested.emit)
+        self.toolbar.clear_clicked.connect(self.clear_requested.emit)
+        self.toolbar.ghost_clicked.connect(self.toggle_ghost_mode)
+
+        self._toolbar_effect = QGraphicsOpacityEffect(self.toolbar)
+        self._toolbar_effect.setOpacity(0.0)
+        self.toolbar.setGraphicsEffect(self._toolbar_effect)
+
+        self._toolbar_anim = QPropertyAnimation(self._toolbar_effect, b"opacity", self)
+        self._toolbar_anim.setDuration(150)
+
+        self._toolbar_hide_timer = QTimer(self)
+        self._toolbar_hide_timer.setSingleShot(True)
+        self._toolbar_hide_timer.setInterval(400)
+        self._toolbar_hide_timer.timeout.connect(self._fade_out_toolbar)
+
+        # Настройки размера и шрифта
         settings.changed.connect(self._on_setting_changed)
         self.update_font_size(int(settings.get("font_size", 14)))
         self.update_opacity(float(settings.get("opacity", 0.95)))
+
+        # ВАЖНО: задаем размер в самом конце, когда ВСЕ виджеты уже созданы
+        self.resize(420, 120)
+        self._reposition_overlays()
+
+    # ---------- позиционирование плавающих элементов ----------
+    def _reposition_overlays(self):
+        offset = SHADOW_MARGIN + 3
+        # 1. Grip в нижнем правом углу
+        self.grip.move(self.width() - self.grip.width() - offset,
+                       self.height() - self.grip.height() - offset)
+        self.grip.raise_()
+
+        # 2. StatusPill в нижнем левом углу
+        pill_h = self.status_pill.sizeHint().height()
+        self.status_pill.move(SHADOW_MARGIN + 6,
+                              self.height() - pill_h - SHADOW_MARGIN - 4)
+        self.status_pill.raise_()
+
+        # 3. FloatingToolbar в верхнем правом углу
+        self.toolbar.adjustSize()
+        tb_w = self.toolbar.width()
+        self.toolbar.move(
+            self.width() - tb_w - SHADOW_MARGIN - 6,
+            SHADOW_MARGIN,
+        )
+        self.toolbar.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition_overlays()
 
     # ---------- настройки ----------
     def _on_setting_changed(self, key, value):
@@ -261,10 +359,6 @@ class TranslateWindow(QWidget):
             self.update_opacity(float(value))
 
     def update_font_size(self, size):
-        # Глобальный QSS (theme.py: QWidget { font-size: 13px }) на Windows
-        # может перекрывать setFont() на QTextEdit. Задаём font-size через QSS
-        # прямо на text_widget — это имеет приоритет над глобальным правилом.
-        # Сохраняем все остальные стили (фон, скроллбар) из исходного блока.
         size = int(size)
         self.text_widget.setStyleSheet(
             f"""
@@ -280,9 +374,6 @@ class TranslateWindow(QWidget):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
             """
         )
-        # setFont меняет шрифт только для НОВОГО текста. Существующий текст
-        # сохраняет старый charFormat. Чтобы слайдер сразу менял размер
-        # всего содержимого — перерисовываем весь документ через mergeCharFormat.
         new_font = QFont("Segoe UI", size)
         self.text_widget.setFont(new_font)
         doc = self.text_widget.document()
@@ -310,13 +401,61 @@ class TranslateWindow(QWidget):
             self.raise_()
             self.activateWindow()
 
+    # ---------- сквозной клик (Ghost mode) ----------
+    def toggle_ghost_mode(self) -> bool:
+        self._ghost_mode = not self._ghost_mode
+        self.toolbar.set_ghost_active(self._ghost_mode)
+
+        if self._ghost_mode:
+            self._toolbar_hide_timer.stop()
+            self._toolbar_anim.stop()
+            self._toolbar_effect.setOpacity(1.0)
+        else:
+            self._toolbar_hide_timer.start(500)
+
+        status_txt = "ВКЛ (клики идут в игру)" if self._ghost_mode else "ВЫКЛ"
+        self.show_translation(f"[Сквозной клик: {status_txt}]")
+        return self._ghost_mode
+
+    def nativeEvent(self, eventType, message):
+        if eventType == b"windows_generic_MSG" and getattr(self, "_ghost_mode", False) and sys.platform == "win32":
+            msg = wintypes.MSG.from_address(int(message))
+            if msg.message == 0x0084:  # WM_NCHITTEST
+                x = ctypes.c_short(msg.lParam & 0xFFFF).value
+                y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                local_pt = self.mapFromGlobal(QPoint(x, y))
+                if self.toolbar.geometry().contains(local_pt):
+                    return True, 1  # HTCLIENT (тулбар кликабелен)
+                return True, -1     # HTTRANSPARENT (текст прозрачен для мыши)
+        return super().nativeEvent(eventType, message)
+
+    # ---------- тулбар при наведении ----------
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        if not self._ghost_mode:
+            self._toolbar_hide_timer.stop()
+            self._toolbar_anim.stop()
+            self._toolbar_anim.setStartValue(self._toolbar_effect.opacity())
+            self._toolbar_anim.setEndValue(1.0)
+            self._toolbar_anim.start()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        if not self._ghost_mode:
+            self._toolbar_hide_timer.start(800)
+
+    def _fade_out_toolbar(self):
+        if not self._ghost_mode:
+            # Защита: если курсор физически всё ещё находится в пределах окна/кнопок — не гасим!
+            if self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+                return
+            self._toolbar_anim.stop()
+            self._toolbar_anim.setStartValue(self._toolbar_effect.opacity())
+            self._toolbar_anim.setEndValue(0.0)
+            self._toolbar_anim.start()
+
     # ---------- запретная зона для drag'а ----------
     def set_forbidden_rect(self, rect):
-        """Установить запретную зону (bbox OCR) или None для снятия.
-
-        При drag'е окно не сможет зайти в эту зону — прилипнет к её
-        ближайшей границе снаружи.
-        """
         self._forbidden_rect = rect
 
     # ---------- drag ----------
@@ -331,50 +470,28 @@ class TranslateWindow(QWidget):
     def mouseMoveEvent(self, event):
         if self._move_pos and (event.buttons() & Qt.MouseButton.LeftButton):
             new_pos = event.globalPosition().toPoint() - self._move_pos
-            # Если есть запретная зона (bbox OCR) — не давать окну зайти в неё.
-            # "Прилипание" к ближайшей границе снаружи (вариант C):
-            # если новая позиция пересекает bbox, корректируем её, чтобы
-            # окно остановилось у границы bbox.
             if self._forbidden_rect is not None:
                 new_x, new_y = new_pos.x(), new_pos.y()
                 new_rect = QRect(new_x, new_y, self.width(), self.height())
                 if new_rect.intersects(self._forbidden_rect):
                     fr = self._forbidden_rect
-                    # Корректируем по минимальному смещению — прилипаем к
-                    # ближайшей границе bbox снаружи.
-                    # Если окно пересекает bbox и по X, и по Y — выбираем
-                    # ось, по которой меньше "проталкивать".
-                    # Подсчёт 4 вариантов сдвига:
-                    shift_left = fr.left() - self.width() - 1   # окно левее bbox
-                    shift_right = fr.right() + 1                # окно правее bbox
-                    shift_top = fr.top() - self.height() - 1    # окно выше bbox
-                    shift_bottom = fr.bottom() + 1             # окно ниже bbox
-                    # 4 кандидата: (x, y, расстояние)
+                    shift_left = fr.left() - self.width() - 1
+                    shift_right = fr.right() + 1
+                    shift_top = fr.top() - self.height() - 1
+                    shift_bottom = fr.bottom() + 1
                     cands = [
                         (shift_left, new_y, abs(new_x - shift_left)),
                         (shift_right, new_y, abs(new_x - shift_right)),
                         (new_x, shift_top, abs(new_y - shift_top)),
                         (new_x, shift_bottom, abs(new_y - shift_bottom)),
                     ]
-                    # Фильтруем кандидатов: только те, кто не
-                    # пересекает bbox даже с учётом касания (поэтому сдвиг с зазором).
-                    valid_cands = []
-                    for cx, cy, dist in cands:
-                        test_rect = QRect(cx, cy, self.width(), self.height())
-                        if not test_rect.intersects(self._forbidden_rect):
-                            valid_cands.append((cx, cy, dist))
+                    valid_cands = [c for c in cands if not QRect(c[0], c[1], self.width(), self.height()).intersects(self._forbidden_rect)]
                     if valid_cands:
-                        # Есть кандидат, полностью вне bbox — прилипаем
                         best_x, best_y, _ = min(valid_cands, key=lambda c: c[2])
                         new_pos.setX(best_x)
                         new_pos.setY(best_y)
                     else:
-                        # Окно больше bbox — ни один кандидат не
-                        # помещается вне bbox. Не двигаем окно —
-                        # остаёмся на старой позиции. Юзер может
-                        # уменьшить окно (ResizeGrip) или область OCR.
-                        print("[auto] WARN: окно больше bbox — не движу")
-                        return  # не двигать
+                        return
             self.move(new_pos)
             event.accept()
 
@@ -383,10 +500,6 @@ class TranslateWindow(QWidget):
 
     # ---------- контент ----------
     def show_translation(self, text, x=None, y=None):
-        # Служебные сообщения (начинаются с «[») — только в toast,
-        # не добавляем в QTextEdit. Переводы с меткой времени
-        # используют круглые скобки ((HH:MM:SS) текст),
-        # поэтому startswith("[") не переводы не поймает.
         if text.startswith("["):
             self._notice_toast.show_notice(text)
             if x is not None and y is not None:
@@ -394,7 +507,6 @@ class TranslateWindow(QWidget):
             if not self.isVisible() and not self.force_hidden:
                 self.show()
             return
-        # Обычный перевод — добавляем в QTextEdit
         cursor = QTextCursor(self.text_widget.document())
         cursor.movePosition(QTextCursor.MoveOperation.End)
         if self.text_widget.toPlainText().strip():
@@ -403,7 +515,6 @@ class TranslateWindow(QWidget):
         self.text_widget.setTextCursor(cursor)
         self.text_widget.ensureCursorVisible()
 
-        # Если переданы координаты — всегда перемещать окно в эту точку.
         if x is not None and y is not None:
             self.move(x + 20 - SHADOW_MARGIN, y + 20 - SHADOW_MARGIN)
 
@@ -411,7 +522,6 @@ class TranslateWindow(QWidget):
             self.show()
 
     def clear_history(self):
-        """Очистить весь накопленный текст в окне перевода."""
         self.text_widget.clear()
 
     def _cleanup_history(self):
@@ -426,20 +536,10 @@ class TranslateWindow(QWidget):
                     cursor.removeSelectedText()
                     cursor.deleteChar()
         except Exception as _e:
-            # Повреждение document — редкий кейс (одновременный insertText
-            # и trim, или слишком много символов). Без лога окно тихо
-            # раздувается до лимита и в итоге крашит QTextEdit.
             print(f"[warn] _cleanup_history: {_e}")
 
     # ---------- статус ----------
     def set_status(self, state, text):
-        """Установить состояние StatusPill (вызывается из AppController).
-
-        state: "off" (ожидание), "busy" (перевод), "ok" (готово),
-              "error" (ошибка)
-        "ok" и "error" автоматически сбрасываются в "off" через
-        STATUS_AUTO_RESET_OK_MS / STATUS_AUTO_RESET_ERR_MS.
-        """
         self._status_reset_timer.stop()
         self.status_pill.set_state(state, text)
         if state == "ok":
@@ -448,17 +548,4 @@ class TranslateWindow(QWidget):
             self._status_reset_timer.start(STATUS_AUTO_RESET_ERR_MS)
 
     def _reset_status_to_off(self):
-        """Таймер авто-сброса: «Готово»/«Ошибка» → «Ожидание»."""
         self.status_pill.set_state("off", "Ожидание")
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        offset = SHADOW_MARGIN + 3
-        self.grip.move(self.width() - self.grip.width() - offset,
-                       self.height() - self.grip.height() - offset)
-        self.grip.raise_()
-        # StatusPill — в нижнем левом углу, не перекрывает ResizeGrip
-        pill_h = self.status_pill.sizeHint().height()
-        self.status_pill.move(SHADOW_MARGIN + 3,
-                              self.height() - pill_h - SHADOW_MARGIN - 3)
-        self.status_pill.raise_()

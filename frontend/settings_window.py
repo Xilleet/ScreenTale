@@ -53,6 +53,7 @@ class SettingsWindow(QWidget):
         ("toggle_window", "Показать/скрыть окно перевода"),
         ("stop", "Остановить текущий перевод"),
         ("clear", "Очистить историю переводов"),
+        ("ghost", "Сквозной клик (Ghost mode): вкл/выкл"),
     )
 
     def __init__(self, settings, hotkeys: HotkeyManager, on_exit=None, hide_on_close=True):

@@ -96,6 +96,10 @@ class AppController(QObject):
 
         # Окна
         self.trans_win = TranslateWindow(self.settings)
+        self._last_bbox = None
+        self.trans_win.stop_requested.connect(lambda: self._on_hotkey("stop"))
+        self.trans_win.clear_requested.connect(lambda: self._on_hotkey("clear"))
+        self.trans_win.retry_requested.connect(self._retry_last_translation)
         self.settings_win = SettingsWindow(self.settings, self.hotkeys, on_exit=self.exit_app)
 
         # Применить verbose-флаг из настроек к logging_setup (глобальный флаг VERBOSE)
@@ -191,6 +195,8 @@ class AppController(QObject):
         elif action == "clear":
             self.trans_win.clear_history()
             self.trans_win.show_translation("[История очищена]")
+        elif action == "ghost":
+            self.trans_win.toggle_ghost_mode()
 
     # ---------- выделение области и OCR ----------
     def _start_selection(self):
@@ -201,6 +207,10 @@ class AppController(QObject):
         self._was_trans_win_visible = self.trans_win.isVisible() and not self.trans_win.force_hidden
         if self._was_trans_win_visible:
             self.trans_win.hide()
+
+        # Если решим сбрасывать призрака при новом выделении — раскомментировать эти 2 строки:
+        # if getattr(self.trans_win, "_ghost_mode", False):
+        #     self.trans_win.toggle_ghost_mode()
         self.selector = ScreenSelector(self._on_area_selected, on_cancel=self._on_selection_cancel)
 
     def _on_area_selected(self, bbox):
@@ -223,6 +233,9 @@ class AppController(QObject):
             self.trans_win.show()
 
         # 5. Отправляем в OCR
+        self.ocr.read(bbox)
+
+        self._last_bbox = bbox
         self.ocr.read(bbox)
 
     def _on_selection_cancel(self):
@@ -275,6 +288,11 @@ class AppController(QObject):
             self._was_trans_win_visible = self.trans_win.isVisible() and not self.trans_win.force_hidden
             if self._was_trans_win_visible:
                 self.trans_win.hide()
+
+            # Если решим сбрасывать призрака при новом выделении — раскомментировать эти 2 строки:
+            # if getattr(self.trans_win, "_ghost_mode", False):
+            #     self.trans_win.toggle_ghost_mode()
+
             self.selector = ScreenSelector(self._on_auto_area_selected,
                                            on_cancel=self._on_selection_cancel)
 
@@ -323,6 +341,8 @@ class AppController(QObject):
                 "Сдвиньте окно или уменьшите область OCR (Alt+W).",
                 QSystemTrayIcon.MessageIcon.Warning,
                 6000)
+        self._auto_bbox = bbox
+        self._last_bbox = bbox
 
     def _compute_trans_window_pos(self, bbox):
         """Позиция (x, y) окна перевода — выбирает сторону с максимальным
@@ -703,6 +723,14 @@ class AppController(QObject):
         if getattr(self, "tray", None) is not None:
             self.tray.hide()
         self.app.quit()
+
+    def _retry_last_translation(self):
+        if self._last_bbox is not None:
+            self.trans_win.set_status("busy", "Повтор…")
+            print(f"[ctrl] повтор перевода для bbox={self._last_bbox}")
+            self.ocr.read(self._last_bbox, context="single")
+        else:
+            self.trans_win.show_translation("[Нет сохранённой области для повтора]")
 
 def main():
     try:
