@@ -5,6 +5,7 @@ import queue
 import re
 import shutil
 import threading
+import time
 
 from PySide6.QtCore import QThread, Signal
 from tqdm import tqdm as tqdm_base
@@ -60,6 +61,15 @@ def format_size(bytes_val: int) -> str:
         return f"{mb / 1024:.1f} ГБ"
     return f"{int(mb)} МБ"
 
+def format_speed(bps: float) -> str:
+    """Форматирование скорости загрузки (МБ/с или КБ/с)."""
+    if bps <= 0:
+        return "0 КБ/с"
+    mbps = bps / (1024 * 1024)
+    if mbps >= 1.0:
+        return f"{mbps:.1f} МБ/с"
+    kbps = bps / 1024
+    return f"{int(kbps)} КБ/с"
 
 def get_model_cache_dir(engine_id: str) -> str | None:
     """Возвращает путь к папке кэша конкретной модели в hf_cache."""
@@ -141,7 +151,6 @@ def is_network_error(text: str) -> bool:
 
 def translate_online(engine: str, text: str) -> str:
     """Блокирующий онлайн-перевод с одним повтором при сбое."""
-    import time
 
     import deep_translator
     last_error = None
@@ -222,31 +231,50 @@ class _NllbTranslator(_OpusTranslator):
 # Прогресс скачивания: tqdm -> сигнал (агрегат по всем файлам)
 # ============================================================
 class _DownloadTracker:
-    """Суммирует байты по всем файлам репозитория: большие веса + мелочь = один процент."""
+    """Суммирует байты по всем файлам репозитория, замеряет скорость и статус выделения места."""
 
     def __init__(self, on_update):
         self._lock = threading.Lock()
         self._on_update = on_update
         self._done = 0
         self._files = {}   # id(tqdm) -> [имя, total, n]
+        self._last_time = time.monotonic()
+        self._last_bytes = 0
+        self._smoothed_speed = 0.0
 
     def _report(self):
+        now = time.monotonic()
         total = self._done + sum(f[1] for f in self._files.values())
         cur = self._done + sum(f[2] for f in self._files.values())
-        name = ""
-        if self._files:
-            name = list(self._files.values())[-1][0]
-        # Честный режим: без известных размеров — indeterminate, не «вечные 99%»
+        name = list(self._files.values())[-1][0] if self._files else ""
+
+        # Замер скорости каждые 200 мс со сглаживанием
+        dt = now - self._last_time
+        if dt >= 0.2:
+            delta_b = cur - self._last_bytes
+            if delta_b >= 0 and dt > 0:
+                inst_speed = delta_b / dt
+                if self._smoothed_speed <= 0.0:
+                    self._smoothed_speed = inst_speed
+                else:
+                    self._smoothed_speed = 0.7 * self._smoothed_speed + 0.3 * inst_speed
+            self._last_time = now
+            self._last_bytes = cur
+
+        speed_str = format_speed(self._smoothed_speed)
+
         if total <= 0:
             self._on_update(-1, f"Скачивание: {name}")
             return
-        # если большинство файлов без total — тоже честнее indeterminate
-        known = sum(1 for f in self._files.values() if f[1] > 0)
-        if known < 2 and self._files:
-            self._on_update(-1, f"Скачивание: {name}")
-            return
+
         pct = min(int(cur * 100 / total), 99)
-        self._on_update(pct, f"Скачивание: {name} — ~{pct}%")
+
+        # Фаза выделения места на диске (первые секунды для больших файлов > 50 МБ)
+        if total > 50 * 1024 * 1024 and cur < 2 * 1024 * 1024 and self._smoothed_speed < 300 * 1024:
+            self._on_update(0, f"Выделение места на диске ({format_size(total)})…")
+            return
+
+        self._on_update(pct, f"Скачивание: {name} — ~{pct}% · {speed_str}")
 
     def add(self, tid, name, total, n):
         with self._lock:
