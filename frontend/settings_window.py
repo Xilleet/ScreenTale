@@ -409,6 +409,11 @@ class SettingsWindow(QWidget):
 
         self.lbl_cache_total = QLabel("Локальные модели на диске: 0 МБ")
         self.lbl_cache_total.setObjectName("Hint")
+        # Честное пояснение при наведении:
+        self.lbl_cache_total.setToolTip(
+            "В Windows кэш может дублировать файлы и накапливать старые ревизии весов.\n"
+            "Кнопка «Очистить весь кэш» позволяет легко сбросить все накопленные дубликаты."
+        )
         ch.addWidget(self.lbl_cache_total, 1)
 
         self.btn_clear_all = QPushButton("Очистить весь кэш")
