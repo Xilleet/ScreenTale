@@ -148,6 +148,9 @@ class AppController(QObject):
         self.model_manager.failed.connect(self._on_model_failed)
         self.model_manager.translation_result.connect(self._apply_translation_result)
         self.model_manager.start()
+        self.settings_win.download_model_requested.connect(self.model_manager.load)
+        self.settings_win.delete_model_requested.connect(self._on_delete_model)
+        self.settings_win.clear_all_cache_requested.connect(self._on_clear_all_cache)
 
            # --- Авто-режим ---
         self._auto_active = False
@@ -160,9 +163,17 @@ class AppController(QObject):
         self._auto_timer.timeout.connect(self._execute_auto_translate)
 
         # Если в конфиге стоит локальный движок — грузим сразу (как в v0.3.2)
+        # engine = self.settings.get("translator", "google")
+        # if engine in LOCAL_ENGINES:
+        #     self.model_manager.load(engine)
+
+        # грузим в память ТОЛЬКО если модель уже реально скачана
+        from backend.translators import is_model_cached
         engine = self.settings.get("translator", "google")
         if engine in LOCAL_ENGINES:
-            self.model_manager.load(engine)
+            is_c, _ = is_model_cached(engine)
+            if is_c:
+                self.model_manager.load(engine) 
 
         self.settings.changed.connect(self._on_setting_changed)
         self.translation_ready.connect(self._apply_translation_result)
@@ -592,20 +603,26 @@ class AppController(QObject):
     def _on_translation_failed(self, seq, engine, error):
         if seq != self._req_seq:
             return
-        # Статус: ошибка — показать «Ошибка» (auto-reset в off через 3 сек)
         self.trans_win.set_status("error", "Ошибка")
         if self._fallback_active or not is_network_error(error):
             self._apply_translation_result(seq, f"[Ошибка перевода: {_short(error)}]")
             return
-        # Сеть лежит: уведомляем и переключаемся на простую офлайн-модель
+
+        # Сеть упала: проверяем, есть ли готовая офлайн-модель на диске
+        from backend.translators import ENGINE_LABELS, get_available_offline_engine
+        available_engine = get_available_offline_engine(preferred="opus")
+
+        if available_engine is None:
+            self._apply_translation_result(
+                seq, "[Интернет недоступен, а офлайн-модель не скачана. Скачайте её в Настройках]")
+            self.trans_win.set_status("error", "Нет сети и модели")
+            return
+
         self._fallback_active = True
         self._pending_fallback = self._last_source
-        self.trans_win.show_translation("[Интернет недоступен — переключаюсь на офлайн-модель…]")
-        # Статус: переключение модели — это долгий процесс (скачивание/загрузка opus).
-        # Без явного статуса юзер видит «Ожидание» и думает, что прога зависла —
-        # перевыделяет область, плодя дубликаты. Явный «занято» успокаивает.
-        self.trans_win.set_status("busy", "Переключение на офлайн-модель…")
-        self.settings.set("translator", "opus")   # -> changed -> load -> ready -> перевод
+        self.trans_win.show_translation(f"[Интернет недоступен — переключаюсь на офлайн ({ENGINE_LABELS.get(available_engine)})...]")
+        self.trans_win.set_status("busy", "Переключение на офлайн…")
+        self.settings.set("translator", available_engine)
         
     def _on_model_ready(self, engine_id):
         # Гонка: сеть упала -> контроллер сам переключил на 'opus' (fallback).
@@ -647,11 +664,30 @@ class AppController(QObject):
         if key == "gpu":
             self.ocr.request_gpu(bool(value))
         elif key == "translator":
+            from backend.translators import is_model_cached
             if value in LOCAL_ENGINES:
-                self.model_manager.load(value)
+                is_c, _ = is_model_cached(value)
+                if is_c:
+                    self.model_manager.load(value)
+                else:
+                    self.model_manager.unload()
             else:
                 self.model_manager.unload()
                 self.settings_win.model_finished("off", "Локальная модель не загружена")
+
+    def _on_delete_model(self, engine_id):
+        from backend.translators import delete_model_cache
+        self.model_manager.unload()
+        delete_model_cache(engine_id)
+        self.settings_win._update_cache_display()
+        self.settings_win.toast.show_toast("Модель успешно удалена")
+
+    def _on_clear_all_cache(self):
+        from backend.translators import clear_all_cache
+        self.model_manager.unload()
+        clear_all_cache()
+        self.settings_win._update_cache_display()
+        self.settings_win.toast.show_toast("Кэш моделей полностью очищен")
 
     def _on_gpu_result(self, success, is_gpu, message):
         actual = bool(success and is_gpu)

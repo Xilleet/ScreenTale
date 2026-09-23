@@ -1,7 +1,7 @@
 import os
 import sys
 
-from PySide6.QtCore import Qt, QTimer, qVersion
+from PySide6.QtCore import Qt, QTimer, Signal, qVersion
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -47,6 +48,10 @@ TRANSLATOR_HINTS = {
 
 
 class SettingsWindow(QWidget):
+    download_model_requested = Signal(str)
+    delete_model_requested = Signal(str)
+    clear_all_cache_requested = Signal()
+
     HOTKEY_ACTIONS = (
         ("single", "Перевести выделенную область"),
         ("auto", "Авто-перевод: вкл/выкл"),
@@ -346,7 +351,7 @@ class SettingsWindow(QWidget):
         else:
             self._saved_timer.start()
 
-    # ---------------- страница: Перевод ----------------
+# ---------------- страница: Перевод ----------------
     def _page_translation(self):
         page, v = self._page()
 
@@ -357,9 +362,33 @@ class SettingsWindow(QWidget):
         self.translator_hint.setObjectName("Hint")
         self.translator_hint.setWordWrap(True)
         cv.addWidget(self.translator_hint)
+
+        # Ряд управления локальной моделью (Статус + кнопки Скачать/Удалить)
+        self.model_ctrl_row = QWidget()
+        self.model_ctrl_row.setObjectName("Row")
+        mch = QHBoxLayout(self.model_ctrl_row)
+        mch.setContentsMargins(0, 4, 0, 0)
+        mch.setSpacing(10)
+
         self.model_pill = StatusPill()
         self.model_pill.set_state("off", "Локальная модель не загружена")
-        cv.addWidget(self.model_pill)
+        mch.addWidget(self.model_pill, 1)
+
+        self.btn_download_model = QPushButton("⬇ Скачать модель")
+        self.btn_download_model.setObjectName("Ghost")
+        self.btn_download_model.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_download_model.clicked.connect(self._on_download_clicked)
+        self.btn_download_model.hide()
+
+        self.btn_delete_model = QPushButton("Удалить")
+        self.btn_delete_model.setObjectName("Danger")
+        self.btn_delete_model.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_delete_model.clicked.connect(self._on_delete_model_clicked)
+        self.btn_delete_model.hide()
+
+        mch.addWidget(self.btn_download_model)
+        mch.addWidget(self.btn_delete_model)
+        cv.addWidget(self.model_ctrl_row)
 
         self.model_bar = BusyBar()
         self.model_bar.hide()
@@ -370,6 +399,26 @@ class SettingsWindow(QWidget):
         self.model_hint.setWordWrap(True)
         self.model_hint.hide()
         cv.addWidget(self.model_hint)
+
+        # Разделитель и блок общего кэша
+        cache_row = QWidget()
+        cache_row.setObjectName("Row")
+        ch = QHBoxLayout(cache_row)
+        ch.setContentsMargins(0, 8, 0, 0)
+        ch.setSpacing(10)
+
+        self.lbl_cache_total = QLabel("Локальные модели на диске: 0 МБ")
+        self.lbl_cache_total.setObjectName("Hint")
+        ch.addWidget(self.lbl_cache_total, 1)
+
+        self.btn_clear_all = QPushButton("Очистить весь кэш")
+        self.btn_clear_all.setObjectName("Ghost")
+        self.btn_clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_all.clicked.connect(self._on_clear_all_cache_clicked)
+        ch.addWidget(self.btn_clear_all)
+
+        cv.addWidget(cache_row)
+
         self.translator_seg.valueChanged.connect(self._on_translator_changed)
         v.addWidget(card)
 
@@ -387,6 +436,7 @@ class SettingsWindow(QWidget):
         self.gpu_toggle.toggled.connect(self._on_gpu_toggled)
         v.addWidget(card2)
 
+        # Карточка Авто-режима (из Шага 1)
         card_auto, c_auto = self._card("Авто-режим")
         drow = QWidget()
         drow.setObjectName("Row")
@@ -422,6 +472,90 @@ class SettingsWindow(QWidget):
         self.auto_delay_slider.valueChanged.connect(self._on_auto_delay_slider)
         v.addStretch(1)
         return page
+
+    def _update_cache_display(self):
+        """Обновляет статус выбранной модели и общий размер кэша."""
+        from backend.translators import (
+            _MODEL_SPECS,
+            LOCAL_ENGINES,
+            format_size,
+            get_total_cache_size,
+            is_model_cached,
+        )
+        # 1. Общий кэш
+        total_size = get_total_cache_size()
+        self.lbl_cache_total.setText(f"Локальные модели на диске: {format_size(total_size)}")
+        self.btn_clear_all.setEnabled(total_size > 0)
+
+        # 2. Статус текущего выбранного движка
+        engine = self.settings.get("translator", "google")
+        if engine not in LOCAL_ENGINES:
+            self.model_ctrl_row.hide()
+            self.btn_download_model.hide()
+            self.btn_delete_model.hide()
+            return
+
+        self.model_ctrl_row.show()
+        is_cached, size = is_model_cached(engine)
+        spec = _MODEL_SPECS.get(engine, {})
+        approx = spec.get("approx_size", "")
+
+        if is_cached:
+            self.model_pill.set_state("ok", f"Скачана и готова ({format_size(size)})")
+            self.btn_download_model.hide()
+            self.btn_delete_model.show()
+        else:
+            self.model_pill.set_state("off", f"Не скачана ({approx})")
+            self.btn_download_model.setText(f"⬇ Скачать ({approx})")
+            self.btn_download_model.show()
+            self.btn_delete_model.hide()
+
+    def _on_download_clicked(self):
+        engine = self.settings.get("translator", "opus")
+        self.btn_download_model.setEnabled(False)
+        self.download_model_requested.emit(engine)
+
+    def _on_delete_model_clicked(self):
+        from backend.translators import ENGINE_LABELS, format_size, is_model_cached
+        engine = self.settings.get("translator", "opus")
+        _, size = is_model_cached(engine)
+        title = ENGINE_LABELS.get(engine, engine)
+
+        ans = QMessageBox.question(
+            self,
+            "Удаление модели",
+            f"Удалить локальную модель {title} ({format_size(size)}) с диска?\n"
+            f"При следующем использовании её потребуется скачать заново.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans == QMessageBox.StandardButton.Yes:
+            self.delete_model_requested.emit(engine)
+
+    def _on_clear_all_cache_clicked(self):
+        from backend.translators import format_size, get_total_cache_size
+        total = get_total_cache_size()
+        ans = QMessageBox.question(
+            self,
+            "Очистка кэша",
+            f"Удалить все скачанные локальные модели ({format_size(total)})?\n"
+            f"Кэш будет полностью очищен.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans == QMessageBox.StandardButton.Yes:
+            self.clear_all_cache_requested.emit()
+
+    def _on_translator_changed(self, ident):
+        self.translator_hint.setText(TRANSLATOR_HINTS.get(ident, ""))
+        self.settings.set("translator", ident)
+        self._update_cache_display()
+        self._saved_timer.start()
+
+    def model_finished(self, state, message):
+        self.model_bar.hide()
+        self.model_hint.hide()
+        self.btn_download_model.setEnabled(True)
+        self.model_pill.set_state(state, message)
+        self._update_cache_display()
 
     def _on_translator_changed(self, ident):
         self.translator_hint.setText(TRANSLATOR_HINTS.get(ident, ""))
@@ -468,11 +602,6 @@ class SettingsWindow(QWidget):
         else:
             self.model_bar.set_value(percent)
         self.model_hint.setText(label)
-
-    def model_finished(self, state, message):
-        self.model_bar.hide()
-        self.model_hint.hide()
-        self.model_pill.set_state(state, message)
 
     def model_loaded(self, engine_id):
         self.model_finished("ok", f"Модель готова: {ENGINE_LABELS.get(engine_id, engine_id)}")
@@ -615,7 +744,7 @@ class SettingsWindow(QWidget):
             f"PySide6: {pyside_ver}\nQt: {qVersion()}")
         self.toast.show_toast("Скопировано в буфер обмена")
 
-    # ---------------- реакция на settings.changed ----------------
+# ---------------- реакция на settings.changed ----------------
     def _sync_from_settings(self):
         self.theme_seg.set_value(self.settings.get("theme", "dark"))
         self._on_setting_changed("font_size", self.settings.get("font_size"))
@@ -629,8 +758,11 @@ class SettingsWindow(QWidget):
         self.gpu_toggle.blockSignals(True)
         self.gpu_toggle.setChecked(is_gpu)
         self.gpu_toggle.blockSignals(False)
-        self.gpu_pill.set_state("ok" if is_gpu else "off",
-                                "GPU: ускорение активно" if is_gpu else "CPU: стандартный режим")
+        self.gpu_pill.set_state(
+            "ok" if is_gpu else "off",
+            "GPU: ускорение активно" if is_gpu else "CPU: стандартный режим",
+        )
+        self._update_cache_display()
 
     def _on_setting_changed(self, key, value):
         if key == "font_size":
@@ -652,6 +784,7 @@ class SettingsWindow(QWidget):
         elif key == "translator":
             self.translator_seg.set_value(value)
             self.translator_hint.setText(TRANSLATOR_HINTS.get(value, ""))
+            self._update_cache_display()
         elif key == "hotkeys" or key.startswith("hotkeys."):
             hks = self.settings.get("hotkeys")
             for action, rec in self.recorders.items():
@@ -660,7 +793,7 @@ class SettingsWindow(QWidget):
             self.verbose_toggle.blockSignals(True)
             self.verbose_toggle.setChecked(bool(value))
             self.verbose_toggle.blockSignals(False)
-            set_verbose(bool(value))   # синхронизировать глобальный флаг
+            set_verbose(bool(value))
         elif key == "auto_delay_ms":
             val = int(value)
             self.auto_delay_slider.blockSignals(True)

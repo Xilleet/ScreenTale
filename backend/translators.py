@@ -1,17 +1,15 @@
-"""Движки перевода и менеджер локальных моделей (QThread).
-
-Онлайн-движки (Google, MyMemory) выполняются в QThreadPool.
-Локальные модели (Opus, NLLB) живут в потоке ModelManager: загрузка
-со скачиванием (честный процент), перевод, перенос между CPU/GPU.
-"""
+"""Движки перевода и менеджер локальных моделей (QThread)."""
 import gc
 import os
 import queue
 import re
+import shutil
 import threading
 
 from PySide6.QtCore import QThread, Signal
 from tqdm import tqdm as tqdm_base
+
+from backend.config import get_app_dir
 
 ENGINE_GOOGLE = "google"
 ENGINE_MYMEMORY = "mymemory"
@@ -27,12 +25,109 @@ ENGINE_LABELS = {
 }
 
 _MODEL_SPECS = {
-    ENGINE_OPUS: {"repo": "Helsinki-NLP/opus-mt-en-ru"},
-    ENGINE_NLLB: {"repo": "facebook/nllb-200-distilled-600M"},
+    ENGINE_OPUS: {"repo": "Helsinki-NLP/opus-mt-en-ru", "approx_size": "~300 МБ"},
+    ENGINE_NLLB: {"repo": "facebook/nllb-200-distilled-600M", "approx_size": "~2.5 ГБ"},
 }
 
 _DEVNULL = open(os.devnull, "w")
 
+
+# ============================================================
+# Утилиты работы с кэшем и размерами
+# ============================================================
+def get_folder_size(path: str) -> int:
+    """Быстрый подсчет размера папки в байтах через os.scandir."""
+    total = 0
+    if not os.path.exists(path):
+        return 0
+    try:
+        for entry in os.scandir(path):
+            if entry.is_file(follow_symlinks=False):
+                total += entry.stat().st_size
+            elif entry.is_dir(follow_symlinks=False):
+                total += get_folder_size(entry.path)
+    except (PermissionError, FileNotFoundError, OSError):
+        pass
+    return total
+
+
+def format_size(bytes_val: int) -> str:
+    """Форматирование байтов в читаемый вид (ГБ / МБ)."""
+    if bytes_val <= 0:
+        return "0 МБ"
+    mb = bytes_val / (1024 * 1024)
+    if mb >= 1000:
+        return f"{mb / 1024:.1f} ГБ"
+    return f"{int(mb)} МБ"
+
+
+def get_model_cache_dir(engine_id: str) -> str | None:
+    """Возвращает путь к папке кэша конкретной модели в hf_cache."""
+    spec = _MODEL_SPECS.get(engine_id)
+    if not spec:
+        return None
+    repo_id = spec["repo"]
+    folder_name = "models--" + repo_id.replace("/", "--")
+    base_hf = os.path.join(get_app_dir(), "hf_cache")
+    path_hub = os.path.join(base_hf, "hub", folder_name)
+    path_direct = os.path.join(base_hf, folder_name)
+    if os.path.exists(path_hub):
+        return path_hub
+    if os.path.exists(path_direct):
+        return path_direct
+    return path_hub
+
+
+def is_model_cached(engine_id: str) -> tuple[bool, int]:
+    """Проверяет, скачана ли модель (весит ли папка > 50 МБ). Возвращает (is_cached, size_bytes)."""
+    path = get_model_cache_dir(engine_id)
+    if not path or not os.path.exists(path):
+        return False, 0
+    size = get_folder_size(path)
+    return (size > 50 * 1024 * 1024), size
+
+
+def get_total_cache_size() -> int:
+    """Общий размер всей папки hf_cache."""
+    base_hf = os.path.join(get_app_dir(), "hf_cache")
+    return get_folder_size(base_hf)
+
+
+def delete_model_cache(engine_id: str) -> bool:
+    """Удаляет кэш конкретной выбранной модели."""
+    path = get_model_cache_dir(engine_id)
+    if path and os.path.exists(path):
+        try:
+            shutil.rmtree(path)
+            return True
+        except OSError as e:
+            print(f"[warn] не удалось удалить модель {engine_id}: {e}")
+    return False
+
+
+def clear_all_cache() -> bool:
+    """Полностью очищает всю папку hf_cache."""
+    base_hf = os.path.join(get_app_dir(), "hf_cache")
+    if os.path.exists(base_hf):
+        try:
+            shutil.rmtree(base_hf)
+            os.makedirs(base_hf, exist_ok=True)
+            return True
+        except OSError as e:
+            print(f"[warn] не удалось очистить кэш: {e}")
+    return False
+
+
+def get_available_offline_engine(preferred: str = "opus") -> str | None:
+    """Умный выбор офлайн-модели: возвращает preferred, если она скачана, или любую доступную."""
+    is_pref, _ = is_model_cached(preferred)
+    if is_pref:
+        return preferred
+    for eng in LOCAL_ENGINES:
+        is_c, _ = is_model_cached(eng)
+        if is_c:
+            return eng
+    return None
 
 def is_network_error(text: str) -> bool:
     """Сетевые проблемы И троттлинг (429) — всё, что лечится офлайн-моделью."""
