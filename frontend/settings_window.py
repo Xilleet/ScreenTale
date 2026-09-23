@@ -316,6 +316,12 @@ class SettingsWindow(QWidget):
         self.settings.set("font_size", value)
         self._saved_timer.start()
 
+    def _on_auto_delay_slider(self, value):
+        val = (value // 50) * 50  # округляем с шагом 50 мс
+        self.auto_delay_val.setText(f"{val} мс")
+        self.settings.set("auto_delay_ms", val)
+        self._saved_timer.start()
+
     def _update_preview_font(self, size):
         self.preview_label.setStyleSheet(
             f"font-size: {int(size)}px; color: {PALETTE['text']};")
@@ -379,6 +385,40 @@ class SettingsWindow(QWidget):
         c2.addWidget(self.gpu_bar)
         self.gpu_toggle.toggled.connect(self._on_gpu_toggled)
         v.addWidget(card2)
+
+        card_auto, c_auto = self._card("Авто-режим")
+        drow = QWidget()
+        drow.setObjectName("Row")
+        dh = QHBoxLayout(drow)
+        dh.setContentsMargins(0, 0, 0, 0)
+        dh.setSpacing(10)
+
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(2)
+        left.addWidget(QLabel("Задержка распознавания"))
+        hl = QLabel("Пауза для стабилизации текста перед отправкой в перевод (200–2000 мс).")
+        hl.setObjectName("Hint")
+        hl.setWordWrap(True)
+        left.addWidget(hl)
+        dh.addLayout(left, 1)
+
+        self.auto_delay_slider = QSlider(Qt.Orientation.Horizontal)
+        self.auto_delay_slider.setRange(200, 2000)
+        self.auto_delay_slider.setSingleStep(50)
+        self.auto_delay_slider.setMinimumWidth(180)
+
+        self.auto_delay_val = QLabel("800 мс")
+        self.auto_delay_val.setObjectName("Hint")
+        self.auto_delay_val.setFixedWidth(54)
+        self.auto_delay_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        dh.addWidget(self.auto_delay_slider)
+        dh.addWidget(self.auto_delay_val)
+        c_auto.addWidget(drow)
+        v.addWidget(card_auto)
+
+        self.auto_delay_slider.valueChanged.connect(self._on_auto_delay_slider)
         v.addStretch(1)
         return page
 
@@ -583,6 +623,7 @@ class SettingsWindow(QWidget):
         self._on_setting_changed("translator", self.settings.get("translator"))
         self._on_setting_changed("hotkeys", self.settings.get("hotkeys"))
         self._on_setting_changed("verbose_log", self.settings.get("verbose_log"))
+        self._on_setting_changed("auto_delay_ms", self.settings.get("auto_delay_ms", 800))
         is_gpu = bool(self.settings.get("gpu"))
         self.gpu_toggle.blockSignals(True)
         self.gpu_toggle.setChecked(is_gpu)
@@ -619,6 +660,12 @@ class SettingsWindow(QWidget):
             self.verbose_toggle.setChecked(bool(value))
             self.verbose_toggle.blockSignals(False)
             set_verbose(bool(value))   # синхронизировать глобальный флаг
+        elif key == "auto_delay_ms":
+            val = int(value)
+            self.auto_delay_slider.blockSignals(True)
+            self.auto_delay_slider.setValue(val)
+            self.auto_delay_val.setText(f"{val} мс")
+            self.auto_delay_slider.blockSignals(False)
 
     # ---------------- служебное ----------------
     def resizeEvent(self, e):
