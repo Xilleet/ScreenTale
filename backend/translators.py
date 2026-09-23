@@ -226,6 +226,12 @@ class _NllbTranslator(_OpusTranslator):
                                   max_length=512, no_repeat_ngram_size=3)
         return self.tokenizer.batch_decode(out, skip_special_tokens=True)[0]
 
+def _clean_download_name(name: str) -> str:
+    """Очищает технические сообщения Hugging Face (например, 'Fetching 11 files')."""
+    name = name.strip().rstrip(":")
+    if not name or name.lower().startswith("fetching"):
+        return "файлы модели"
+    return name
 
 # ============================================================
 # Прогресс скачивания: tqdm -> сигнал (агрегат по всем файлам)
@@ -246,7 +252,10 @@ class _DownloadTracker:
         now = time.monotonic()
         total = self._done + sum(f[1] for f in self._files.values())
         cur = self._done + sum(f[2] for f in self._files.values())
-        name = list(self._files.values())[-1][0] if self._files else ""
+        
+        # Очищаем имя от служебного 'Fetching...'
+        raw_name = list(self._files.values())[-1][0] if self._files else ""
+        name = _clean_download_name(raw_name)
 
         # Замер скорости каждые 200 мс со сглаживанием
         dt = now - self._last_time
@@ -264,7 +273,7 @@ class _DownloadTracker:
         speed_str = format_speed(self._smoothed_speed)
 
         if total <= 0:
-            self._on_update(-1, f"Скачивание: {name}")
+            self._on_update(-1, f"Скачивание {name}")
             return
 
         pct = min(int(cur * 100 / total), 99)
@@ -274,7 +283,7 @@ class _DownloadTracker:
             self._on_update(0, f"Выделение места на диске ({format_size(total)})…")
             return
 
-        self._on_update(pct, f"Скачивание: {name} — ~{pct}% · {speed_str}")
+        self._on_update(pct, f"Скачивание {name} — ~{pct}% · {speed_str}")
 
     def add(self, tid, name, total, n):
         with self._lock:
