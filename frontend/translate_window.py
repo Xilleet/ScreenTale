@@ -92,7 +92,7 @@ class _FloatingToolbar(QFrame):
 
         self.btn_ghost = QPushButton("👻")
         self.btn_ghost.setObjectName("ToolbarBtn")
-        self.btn_ghost.setToolTip("Сквозной клик в игру (Alt+G)")
+        self.btn_ghost.setToolTip("Сквозной клик (Alt+G)")
         self.btn_ghost.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_ghost.clicked.connect(self.ghost_clicked.emit)
 
@@ -413,7 +413,7 @@ class TranslateWindow(QWidget):
         else:
             self._toolbar_hide_timer.start(500)
 
-        status_txt = "ВКЛ (клики идут в игру)" if self._ghost_mode else "ВЫКЛ"
+        status_txt = "ВКЛ (клики сквозь окно)" if self._ghost_mode else "ВЫКЛ"
         self.show_translation(f"[Сквозной клик: {status_txt}]")
         return self._ghost_mode
 
