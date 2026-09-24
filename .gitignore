@@ -9,6 +9,7 @@ easyocr_models/
 ruff_report.txt
 check.bat
 ruff.toml
+README.md.back
 
 # Логи и блокировки
 app.log
