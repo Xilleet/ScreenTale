@@ -698,19 +698,28 @@ class AppController(QObject):
 
     # ---------- иконка и трей ----------
     def _get_icon(self):
+        # 1. Проверяем в корне приложения (dev-режим или рядом с exe)
         icon_path = os.path.join(get_app_dir(), "ScreenTale.ico")
         if os.path.exists(icon_path):
             return QIcon(icon_path)
+
+        # 2. Проверяем внутри папки _internal PyInstaller (sys._MEIPASS)
+        if hasattr(sys, "_MEIPASS"):
+            internal_icon = os.path.join(sys._MEIPASS, "ScreenTale.ico")
+            if os.path.exists(internal_icon):
+                return QIcon(internal_icon)
+
+        # 3. Запасная программная отрисовка (если иконка вообще отсутствует)
         pixmap = QPixmap(64, 64)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor("#e74c3c"))
+        painter.setBrush(QColor("#e08e45"))  # наш фирменный янтарь
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(0, 0, 64, 64, 10, 10)
-        painter.setPen(QColor("white"))
-        painter.setFont(QFont("Arial", 28, QFont.Weight.Bold))
-        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "T")
+        painter.drawRoundedRect(0, 0, 64, 64, 12, 12)
+        painter.setPen(QColor("#1a1816"))
+        painter.setFont(QFont("Segoe UI", 26, QFont.Weight.Bold))
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "ST")
         painter.end()
         return QIcon(pixmap)
 
