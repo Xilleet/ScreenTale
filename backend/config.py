@@ -19,8 +19,13 @@ def get_app_dir() -> str:
     # __file__ = <проект>/backend/config.py -> два dirname = корень проекта
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+def get_data_dir() -> str:
+    """Папка для всех пользовательских данных (кэш, логи, настройки)."""
+    d = os.path.join(get_app_dir(), "data")
+    os.makedirs(d, exist_ok=True)
+    return d
 
-CONFIG_PATH = os.path.join(get_app_dir(), "config.json")
+CONFIG_PATH = os.path.join(get_data_dir(), "config.json")
 
 DEFAULTS = {
     "font_size": 14,

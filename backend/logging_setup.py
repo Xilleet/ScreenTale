@@ -40,14 +40,15 @@ def vlog(*args, **kwargs):
 
 def setup_logging(app_dir: str):
     global _log_file
-    path = os.path.join(app_dir, LOG_NAME)
 
+    # 1. Сначала сдвигаем старые файлы логов
+    _rotate_logs(app_dir, max_backups=2)
+
+    # 2. Открываем новый свежий app.log для текущего запуска программы
+    path = os.path.join(app_dir, LOG_NAME)
     _log_file = open(path, "w", encoding="utf-8", buffering=1)  # line-buffered
 
     class _Tee:
-        """Пишет во все потоки сразу; ошибки отдельных потоков глотает
-        (в windowed-режиме реальной консоли нет — None просто пропустится)."""
-
         def __init__(self, *streams):
             self._streams = streams
 
@@ -69,7 +70,6 @@ def setup_logging(app_dir: str):
     # Подмена stdout/stderr — ОДИН раз, здесь. `or _log_file` подставляет
     # файл, если реального потока нет (windowed-сборка без консоли).
     def _wrap(stream):
-        """stdout + файл; если stdout нет (windowed) — только файл, без дублей."""
         targets = []
         if stream is not None:
             targets.append(stream)
@@ -79,10 +79,26 @@ def setup_logging(app_dir: str):
     sys.stdout = _wrap(sys.stdout)
     sys.stderr = _wrap(sys.stderr)
 
-    # Нативные краши (segfault и пр.) — тоже в app.log
     try:
         faulthandler.enable(file=_log_file)
     except Exception:
         faulthandler.enable()
 
     print(f"=== ScreenTale, запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+
+def _rotate_logs(app_dir: str, max_backups: int = 2):
+    """Сдвигает старые логи: app.log -> app_1.log -> app_2.log (сохраняя расширение .log)."""
+    base_name, ext = os.path.splitext(LOG_NAME)  # 'app' и '.log'
+
+    for i in range(max_backups, 0, -1):
+        src_name = f"{base_name}_{i-1}{ext}" if i > 1 else LOG_NAME
+        src = os.path.join(app_dir, src_name)
+        dst = os.path.join(app_dir, f"{base_name}_{i}{ext}")
+
+        if os.path.exists(src):
+            try:
+                if os.path.exists(dst):
+                    os.remove(dst)
+                os.rename(src, dst)
+            except OSError:
+                pass

@@ -12,7 +12,7 @@ import re
 from PIL import Image
 from PySide6.QtCore import QThread, Signal
 
-from backend.config import get_app_dir
+from backend.config import get_data_dir
 from backend.logging_setup import vlog
 
 
@@ -143,7 +143,7 @@ class OcrWorker(QThread):
             self._drop_reader()
             # Модели EasyOCR — портативно, рядом с приложением
             # (по умолчанию EasyOCR пишет в C:\Users\<юзер>\.EasyOCR)
-            mdir = os.path.join(get_app_dir(), "easyocr_models")
+            mdir = os.path.join(get_data_dir(), "easyocr_models")
             os.makedirs(mdir, exist_ok=True)
             self._reader = self._easyocr.Reader(["en"], gpu=use_gpu,
                                                 model_storage_directory=mdir)

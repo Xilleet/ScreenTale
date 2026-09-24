@@ -10,7 +10,7 @@ import time
 from PySide6.QtCore import QThread, Signal
 from tqdm import tqdm as tqdm_base
 
-from backend.config import get_app_dir
+from backend.config import get_data_dir
 
 ENGINE_GOOGLE = "google"
 ENGINE_MYMEMORY = "mymemory"
@@ -78,7 +78,7 @@ def get_model_cache_dir(engine_id: str) -> str | None:
         return None
     repo_id = spec["repo"]
     folder_name = "models--" + repo_id.replace("/", "--")
-    base_hf = os.path.join(get_app_dir(), "hf_cache")
+    base_hf = os.path.join(get_data_dir(), "hf_cache")
     path_hub = os.path.join(base_hf, "hub", folder_name)
     path_direct = os.path.join(base_hf, folder_name)
     if os.path.exists(path_hub):
@@ -99,7 +99,7 @@ def is_model_cached(engine_id: str) -> tuple[bool, int]:
 
 def get_total_cache_size() -> int:
     """Общий размер всей папки hf_cache."""
-    base_hf = os.path.join(get_app_dir(), "hf_cache")
+    base_hf = os.path.join(get_data_dir(), "hf_cache")
     return get_folder_size(base_hf)
 
 
@@ -117,7 +117,7 @@ def delete_model_cache(engine_id: str) -> bool:
 
 def clear_all_cache() -> bool:
     """Полностью очищает всю папку hf_cache."""
-    base_hf = os.path.join(get_app_dir(), "hf_cache")
+    base_hf = os.path.join(get_data_dir(), "hf_cache")
     if os.path.exists(base_hf):
         try:
             shutil.rmtree(base_hf)

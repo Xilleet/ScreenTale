@@ -9,10 +9,10 @@ from difflib import SequenceMatcher
 # В windowed-сборке sys.stdout/sys.stderr равны None: любой print/warning
 # от импортируемых модулей роняет процесс. Валидируем потоки до того,
 # как хоть один импорт попробует в них писать.
-from backend.config import get_app_dir
+from backend.config import get_app_dir, get_data_dir
 from backend.logging_setup import set_verbose, setup_logging, vlog
 
-setup_logging(get_app_dir())
+setup_logging(get_data_dir())
 
 import pyperclip
 from PySide6.QtCore import (
@@ -45,7 +45,7 @@ from frontend.translate_window import TranslateWindow
 
 # ---- Кэш HuggingFace: всегда локально (портативность + кириллица в путях) ----
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-_local_hf = os.path.join(get_app_dir(), "hf_cache")
+_local_hf = os.path.join(get_data_dir(), "hf_cache")
 os.environ["HF_HOME"] = _local_hf
 os.makedirs(_local_hf, exist_ok=True)
 
