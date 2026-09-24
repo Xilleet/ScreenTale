@@ -3,6 +3,9 @@ hf_cache/
 easyocr_models/
 на проверку лишних импортов/
 *.zip
+build/
+dist/
+ScreenTale.spec
 
 Кэш линтера Ruff и отчеты
 .ruff_cache/
@@ -10,6 +13,8 @@ ruff_report.txt
 check.bat
 ruff.toml
 README.md.back
+update_reqs.bat
+build.bat
 
 # Логи и блокировки
 app.log
