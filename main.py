@@ -198,6 +198,14 @@ class AppController(QObject):
         task = UpdateCheckTask(lambda data: self.update_available.emit(data))
         QThreadPool.globalInstance().start(task)
 
+        self.settings_win.update_banner.update_clicked.connect(self._start_auto_update)
+        self.settings_win.update_banner.snooze_clicked.connect(self._on_update_snoozed)
+
+        self.update_available.connect(self._on_update_available)
+        from backend.updater import UpdateCheckTask
+        task = UpdateCheckTask(lambda data: self.update_available.emit(data))
+        QThreadPool.globalInstance().start(task)
+
     # ---------- хоткеи ----------
     def _on_hotkey(self, action):
         if action == "toggle_window":
@@ -811,21 +819,35 @@ class AppController(QObject):
         self.settings_win.activateWindow()
 
     # ---------- Автообновление в 1 клик ----------
-    def _prompt_user_update(self, manifest_data: dict):
-        new_ver = manifest_data.get("version", "новейшая")
-        ans = QMessageBox.question(
-            self.trans_win,
-            "Обновление ScreenTale",
-            f"🚀 Доступна новая версия ScreenTale v{new_ver}!\n\n"
-            f"Скачать и установить обновление автоматически?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if ans == QMessageBox.StandardButton.Yes:
-            self._start_auto_update(manifest_data)
+
+    def _on_update_available(self, manifest_data: dict):
+        """Проверяет дату отсрочки и показывает встроенный баннер."""
+        import datetime
+        snooze_str = self.settings.get("update_snooze_until")
+        if snooze_str:
+            try:
+                snooze_date = datetime.date.fromisoformat(str(snooze_str))
+                today = datetime.datetime.now(datetime.timezone.utc).date()
+                if today < snooze_date:
+                    print("[updater] показ обновления отложен по таймеру 7 дней")
+                    return
+            except Exception:
+                pass
+
+        # Показываем красивый баннер прямо в окне настроек
+        self.settings_win.update_banner.show_update(manifest_data)
+
+    def _on_update_snoozed(self, manifest_data: dict):
+        """Откладывает показ обновления ровно на 7 дней."""
+        import datetime
+        today = datetime.datetime.now(datetime.timezone.utc).date()
+        snooze_date = (today + datetime.timedelta(days=7)).isoformat()
+        self.settings.set("update_snooze_until", snooze_date)
+        self.settings_win.toast.show_toast("Напоминание об обновлении отложено на 7 дней")
 
     def _start_auto_update(self, manifest_data: dict):
         from backend.updater import UpdateDownloadWorker
-        self.trans_win.show_translation("[Скачивание обновления в фоне...]")
+        self.settings_win.toast.show_toast("Скачивание обновления в фоне…", ms=5000)
         self.trans_win.set_status("busy", "Обновление…")
 
         self._update_worker = UpdateDownloadWorker(manifest_data)
@@ -835,12 +857,11 @@ class AppController(QObject):
 
     def _on_update_failed(self, error_msg: str):
         self.trans_win.set_status("error", "Ошибка обновления")
-        self.trans_win.show_translation(f"[Не удалось обновить: {_short(error_msg)}]")
+        self.settings_win.toast.show_toast(f"Ошибка обновления: {_short(error_msg)}", ms=5000)
 
     def _on_update_ready_to_restart(self):
-        self.trans_win.show_translation("[Обновление готово! Перезапуск...]")
-        # Завершаем приложение для замены файлов
-        QTimer.singleShot(800, self.exit_app)
+        self.settings_win.toast.show_toast("Обновление готово! Перезапуск через 1 сек…")
+        QTimer.singleShot(1000, self.exit_app)
 
     # ---------- выход ----------
     def exit_app(self):

@@ -36,6 +36,7 @@ DEFAULTS = {
     "auto_copy": True,
     "auto_delay_ms": 800,
     "verbose_log": False,   # тумблер "Подробный лог" в Настройках → О программе
+    "update_snooze_until": "",
     "hotkeys": {
         # mods — флаги RegisterHotKey, vk — виртуальный код Windows
         "single":        {"label": "Alt+Q",  "mods": 0x0001, "vk": 0x51},

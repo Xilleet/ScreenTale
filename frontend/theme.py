@@ -181,6 +181,22 @@ QFrame#SettingsContainer {
     border-radius: 12px;
 }
 
+QFrame#UpdateBanner {
+    background-color: @bg_card;
+    border: 1px solid @accent;
+    border-radius: 10px;
+}
+QPushButton#UpdateBtn {
+    background-color: @accent;
+    color: #1a1816;
+    font-weight: 600;
+    border: none;
+    border-radius: 7px;
+    padding: 6px 14px;
+}
+QPushButton#UpdateBtn:hover {
+    background-color: #f59e0b;
+}
 """
 
 

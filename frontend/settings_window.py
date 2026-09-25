@@ -46,6 +46,76 @@ TRANSLATOR_HINTS = {
     "nllb": "Локальная модель NLLB-200 (~2.5 ГБ). Работает офлайн, качество выше.",
 }
 
+# ============================================================
+# Встроенный баннер обновления внизу окна настроек
+# ============================================================
+class _UpdateBanner(QFrame):
+    update_clicked = Signal(dict)
+    snooze_clicked = Signal(dict)
+    close_clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("UpdateBanner")
+        self._manifest_data = {}
+        self.hide()
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(14, 10, 14, 12)
+        v.setSpacing(8)
+
+        # Верхняя строчка: Заголовок + Крестик закрытия
+        top_h = QHBoxLayout()
+        top_h.setContentsMargins(0, 0, 0, 0)
+        self.lbl_title = QLabel("🚀 Доступно обновление ScreenTale")
+        self.lbl_title.setStyleSheet("font-weight: 600; font-size: 13px; color: #f2ede4;")
+        top_h.addWidget(self.lbl_title, 1)
+
+        btn_close = QPushButton("✕")
+        btn_close.setObjectName("Ghost")
+        btn_close.setFixedSize(22, 22)
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.clicked.connect(self._on_close)
+        top_h.addWidget(btn_close)
+        v.addLayout(top_h)
+
+        # Нижняя строчка: Кнопки действий
+        btn_h = QHBoxLayout()
+        btn_h.setContentsMargins(0, 0, 0, 0)
+        btn_h.setSpacing(8)
+
+        self.btn_update = QPushButton("⚡ Обновить сейчас")
+        self.btn_update.setObjectName("UpdateBtn")
+        self.btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_update.clicked.connect(self._on_update)
+
+        self.btn_snooze = QPushButton("⏱ Напомнить через 7 дней")
+        self.btn_snooze.setObjectName("Ghost")
+        self.btn_snooze.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_snooze.clicked.connect(self._on_snooze)
+
+        btn_h.addWidget(self.btn_update)
+        btn_h.addWidget(self.btn_snooze)
+        btn_h.addStretch(1)
+        v.addLayout(btn_h)
+
+    def show_update(self, manifest_data: dict):
+        self._manifest_data = manifest_data
+        ver = manifest_data.get("version", "")
+        self.lbl_title.setText(f"🚀 Доступна новая версия ScreenTale v{ver}!")
+        self.show()
+
+    def _on_update(self):
+        self.update_clicked.emit(self._manifest_data)
+
+    def _on_snooze(self):
+        self.snooze_clicked.emit(self._manifest_data)
+        self.hide()
+
+    def _on_close(self):
+        self.close_clicked.emit()
+        self.hide()
+
 
 class SettingsWindow(QWidget):
     download_model_requested = Signal(str)
@@ -77,7 +147,6 @@ class SettingsWindow(QWidget):
 
         self._drag_pos = None
 
-        # Внешний контейнер со скруглёнными углами и рамкой
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
@@ -91,13 +160,15 @@ class SettingsWindow(QWidget):
         root.setSpacing(0)
         root.addWidget(self._build_sidebar())
 
-        # Правая часть: верхняя панель с кнопками + контент страниц
         right_panel = QWidget()
         rv = QVBoxLayout(right_panel)
-        rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(0)
+        rv.setContentsMargins(0, 0, 0, 14)
+        rv.setSpacing(6)
         rv.addWidget(self._build_top_bar())
         rv.addWidget(self._build_content(), 1)
+
+        self.update_banner = _UpdateBanner(self)
+        rv.addWidget(self.update_banner)
 
         root.addWidget(right_panel, 1)
 
@@ -110,11 +181,9 @@ class SettingsWindow(QWidget):
         self.settings.changed.connect(self._on_setting_changed)
         self._sync_from_settings()
 
-# Включаем нативное скругление углов и тень Windows 11
         if sys.platform == "win32":
             try:
                 import ctypes
-                # DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2
                 val = ctypes.c_int(2)
                 ctypes.windll.dwmapi.DwmSetWindowAttribute(
                     int(self.winId()), 33, ctypes.byref(val), ctypes.sizeof(val)
