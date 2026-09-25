@@ -101,12 +101,12 @@ class _UpdateBanner(QFrame):
         btn_h.setContentsMargins(0, 0, 0, 0)
         btn_h.setSpacing(8)
 
-        self.btn_update = QPushButton("⚡ Обновить сейчас")
+        self.btn_update = QPushButton("Обновить сейчас")
         self.btn_update.setObjectName("UpdateBtn")
         self.btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_update.clicked.connect(self._on_update)
 
-        self.btn_snooze = QPushButton("⏱ Напомнить через 7 дней")
+        self.btn_snooze = QPushButton("Напомнить через 7 дней")
         self.btn_snooze.setObjectName("Ghost")
         self.btn_snooze.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_snooze.clicked.connect(self._on_snooze)
