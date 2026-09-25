@@ -60,6 +60,15 @@ class _UpdateBanner(QFrame):
         self._manifest_data = {}
         self.hide()
 
+        # Явный стильный контейнер с янтарной рамкой
+        self.setStyleSheet("""
+            QFrame#UpdateBanner {
+                background-color: #221f1c;
+                border: 1px solid #e08e45;
+                border-radius: 10px;
+            }
+        """)
+
         v = QVBoxLayout(self)
         v.setContentsMargins(14, 10, 14, 12)
         v.setSpacing(8)
@@ -68,7 +77,8 @@ class _UpdateBanner(QFrame):
         top_h = QHBoxLayout()
         top_h.setContentsMargins(0, 0, 0, 0)
         self.lbl_title = QLabel("Доступно обновление ScreenTale")
-        self.lbl_title.setStyleSheet("font-weight: 600; font-size: 13px; color: #f2ede4;")
+        # Принудительно делаем текст заголовка светлым и читаемым
+        self.lbl_title.setStyleSheet("font-weight: 600; font-size: 13px; color: #f2ede4; background: transparent;")
         top_h.addWidget(self.lbl_title, 1)
 
         self.btn_close = QPushButton("✕")
@@ -94,7 +104,7 @@ class _UpdateBanner(QFrame):
         top_h.addWidget(self.btn_close)
         v.addLayout(top_h)
 
-        # Полоса прогресса и статус (скрыты до начала загрузки)
+        # Полоса прогресса и статус
         self.progress_bar = BusyBar()
         self.progress_bar.hide()
         v.addWidget(self.progress_bar)
@@ -112,11 +122,38 @@ class _UpdateBanner(QFrame):
         self.btn_update = QPushButton("⚡ Обновить сейчас")
         self.btn_update.setObjectName("UpdateBtn")
         self.btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_update.setStyleSheet("""
+            QPushButton#UpdateBtn {
+                background-color: #e08e45;
+                color: #1a1816;
+                font-weight: 600;
+                border: none;
+                border-radius: 7px;
+                padding: 6px 14px;
+            }
+            QPushButton#UpdateBtn:hover {
+                background-color: #f59e0b;
+            }
+        """)
         self.btn_update.clicked.connect(self._on_update)
 
-        self.btn_snooze = QPushButton("⏱ Напомнить через 7 дней")
-        self.btn_snooze.setObjectName("Ghost")
+        self.btn_snooze = QPushButton("Напомнить через 7 дней")
+        self.btn_snooze.setObjectName("BannerSnoozeBtn")
         self.btn_snooze.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_snooze.setStyleSheet("""
+            QPushButton#BannerSnoozeBtn {
+                background: transparent;
+                border: 1px solid #3d3731;
+                border-radius: 7px;
+                color: #f2ede4;
+                font-size: 12px;
+                padding: 6px 12px;
+            }
+            QPushButton#BannerSnoozeBtn:hover {
+                background: #2c2824;
+                border-color: #e08e45;
+            }
+        """)
         self.btn_snooze.clicked.connect(self._on_snooze)
 
         self.btn_layout.addWidget(self.btn_update)
@@ -131,7 +168,6 @@ class _UpdateBanner(QFrame):
         self.show()
 
     def set_downloading_state(self, status_text: str):
-        # Прячем кнопки и крестик, показываем прогресс-бар
         self.btn_update.hide()
         self.btn_snooze.hide()
         self.btn_close.hide()
@@ -144,7 +180,7 @@ class _UpdateBanner(QFrame):
         if percent < 0:
             self.progress_bar.start_indeterminate()
         else:
-            self.progress_bar.set_value(percent)
+            self.progress_bar.set_value(label) # or set_value(percent)
         self.lbl_status.setText(label)
 
     def _on_update(self):

@@ -186,6 +186,25 @@ QFrame#UpdateBanner {
     border: 1px solid @accent;
     border-radius: 10px;
 }
+/* Заголовок баннера адаптируется под тему (@text) */
+QFrame#UpdateBanner QLabel {
+    color: @text;
+    font-weight: 600;
+    font-size: 13px;
+    background: transparent;
+}
+/* Кнопка «Обновить сейчас» остается фирменной янтарной */
+QPushButton#UpdateBtn {
+    background-color: @accent;
+    color: #1a1816;
+    font-weight: 600;
+    border: none;
+    border-radius: 7px;
+    padding: 6px 14px;
+}
+QPushButton#UpdateBtn:hover {
+    background-color: #f59e0b;
+}
 QPushButton#UpdateBtn {
     background-color: @accent;
     color: #1a1816;
@@ -198,7 +217,6 @@ QPushButton#UpdateBtn:hover {
     background-color: #f59e0b;
 }
 """
-
 
 def build_qss() -> str:
     qss = _QSS
