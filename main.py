@@ -847,20 +847,28 @@ class AppController(QObject):
 
     def _start_auto_update(self, manifest_data: dict):
         from backend.updater import UpdateDownloadWorker
-        self.settings_win.toast.show_toast("Скачивание обновления в фоне…", ms=5000)
+        # Переводим баннер в режим загрузки
+        self.settings_win.update_banner.set_downloading_state("Подключение к репозиторию…")
         self.trans_win.set_status("busy", "Обновление…")
 
         self._update_worker = UpdateDownloadWorker(manifest_data)
+        self._update_worker.progress.connect(self._on_update_progress)
         self._update_worker.failed.connect(self._on_update_failed)
         self._update_worker.finished.connect(self._on_update_ready_to_restart)
         self._update_worker.start_download()
 
+    def _on_update_progress(self, percent: int, label: str):
+        self.settings_win.update_banner.update_progress(percent, label)
+
     def _on_update_failed(self, error_msg: str):
         self.trans_win.set_status("error", "Ошибка обновления")
         self.settings_win.toast.show_toast(f"Ошибка обновления: {_short(error_msg)}", ms=5000)
+        # Возвращаем кнопки в баннере обратно (или скрываем баннер)
+        self.settings_win.update_banner.hide()
 
     def _on_update_ready_to_restart(self):
-        self.settings_win.toast.show_toast("Обновление готово! Перезапуск через 1 сек…")
+        self.settings_win.update_banner.update_progress(100, "Обновление готово! Перезапуск...")
+        self.settings_win.toast.show_toast("Перезапуск программы…")
         QTimer.singleShot(1000, self.exit_app)
 
     # ---------- выход ----------

@@ -53,17 +53,15 @@ class UpdateCheckTask(QRunnable):
             if not remote_ver:
                 return
 
-            # Сравниваем версии: если на GitHub новее -> отдаем данные
             if _parse_version(remote_ver) > _parse_version(APP_VERSION):
                 self._on_update_found(data)
         except Exception as e:
-            # Сетевые ошибки тихо игнорируем
             print(f"[updater] проверка обновлений пропущена: {e}")
 
 
 class UpdateDownloadWorker(QObject):
-    """Фоновое скачивание обновления, проверка SHA-256 и запуск установки."""
-    started = Signal()
+    """Фоновое скачивание обновления с передачей процентов, проверка SHA-256 и запуск установки."""
+    progress = Signal(int, str)  # percent, label
     finished = Signal()
     failed = Signal(str)
 
@@ -77,7 +75,6 @@ class UpdateDownloadWorker(QObject):
         t.start()
 
     def _run(self):
-        self.started.emit()
         try:
             download_url = self.manifest_data.get("download_url")
             expected_sha = self.manifest_data.get("sha256", "").strip().lower()
@@ -90,22 +87,52 @@ class UpdateDownloadWorker(QObject):
             os.makedirs(temp_dir, exist_ok=True)
             zip_path = os.path.join(temp_dir, "update.zip")
 
-            # 1. Скачиваем архив обновления
+            self.progress.emit(0, "Подключение к репозиторию…")
+
+            # Скачиваем с отслеживанием прогресса через urllib
             req = urllib.request.Request(
                 download_url,
                 headers={"User-Agent": "ScreenTale-App"}
             )
-            with urllib.request.urlopen(req, timeout=60) as response, open(zip_path, "wb") as out_f:
-                out_f.write(response.read())
+            
+            with urllib.request.urlopen(req, timeout=60) as response:
+                total_size = int(response.headers.get("Content-Length", 0))
+                block_size = 65536
+                downloaded = 0
+                
+                with open(zip_path, "wb") as out_f:
+                    while True:
+                        buffer = response.read(block_size)
+                        if not buffer:
+                            break
+                        downloaded += len(buffer)
+                        out_f.write(buffer)
+                        
+                        if total_size > 0:
+                            pct = int(downloaded * 100 / total_size)
+                            mb_cur = downloaded / (1024 * 1024)
+                            mb_tot = total_size / (1024 * 1024)
+                            self.progress.emit(pct, f"Скачивание: {mb_cur:.1f} / {mb_tot:.1f} МБ ({pct}%)")
+                        else:
+                            mb_cur = downloaded / (1024 * 1024)
+                            self.progress.emit(-1, f"Скачивание: {mb_cur:.1f} МБ…")
 
-            # 2. Сверяем SHA-256 хэш
+            self.progress.emit(100, "Проверка контрольной суммы (SHA-256)…")
+
+            # Сверяем SHA-256
             if expected_sha:
                 actual_sha = calculate_sha256(zip_path).lower()
                 if actual_sha != expected_sha:
+                    try:
+                        os.remove(zip_path)
+                    except OSError:
+                        pass
                     self.failed.emit("Контрольная сумма SHA-256 не совпала! Файл повреждён.")
                     return
 
-            # 3. Генерируем скрипт авто-перезапуска updater.bat
+            self.progress.emit(100, "Подготовка к обновлению…")
+
+            # Создаем updater.bat
             app_dir = get_app_dir()
             updater_bat = os.path.join(temp_dir, "updater.bat")
             extracted_dir = os.path.join(temp_dir, "extracted")
@@ -113,7 +140,7 @@ class UpdateDownloadWorker(QObject):
             with open(updater_bat, "w", encoding="utf-8") as f:
                 f.write(f"""@echo off
 chcp 65001 > nul
-timeout /t 1 /nobreak > nul
+timeout /t 2 /nobreak > nul
 powershell -Command "Expand-Archive -Path '{zip_path}' -DestinationPath '{extracted_dir}' -Force"
 if exist "{extracted_dir}\\ScreenTale" (
     xcopy "{extracted_dir}\\ScreenTale\\*" "{app_dir}\\" /s /e /y /q > nul
@@ -127,8 +154,7 @@ del /f /q "%~f0" > nul 2>&1
 exit
 """)
 
-            # 4. Запускаем updater.bat в отдельном процессе
-            creation_flag = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+            creation_flag = 0x08000000 if sys.platform == "win32" else 0
             subprocess.Popen(["cmd.exe", "/c", updater_bat], creationflags=creation_flag, close_fds=True)
 
             self.finished.emit()
