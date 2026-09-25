@@ -84,6 +84,7 @@ def _short(text, limit=180):
 class AppController(QObject):
     translation_ready = Signal(int, str)          # seq, текст
     translation_failed = Signal(int, str, str)    # seq, engine, ошибка
+    update_available = Signal(dict)  # <--- сигнал найденного обновления
 
     def __init__(self, app):
         super().__init__()
@@ -191,6 +192,11 @@ class AppController(QObject):
                 QSystemTrayIcon.MessageIcon.Information,
                 2500,
             )
+
+        self.update_available.connect(self._prompt_user_update)
+        from backend.updater import UpdateCheckTask
+        task = UpdateCheckTask(lambda data: self.update_available.emit(data))
+        QThreadPool.globalInstance().start(task)
 
     # ---------- хоткеи ----------
     def _on_hotkey(self, action):
@@ -803,6 +809,38 @@ class AppController(QObject):
     def show_settings(self):
         self.settings_win.show()
         self.settings_win.activateWindow()
+
+    # ---------- Автообновление в 1 клик ----------
+    def _prompt_user_update(self, manifest_data: dict):
+        new_ver = manifest_data.get("version", "новейшая")
+        ans = QMessageBox.question(
+            self.trans_win,
+            "Обновление ScreenTale",
+            f"🚀 Доступна новая версия ScreenTale v{new_ver}!\n\n"
+            f"Скачать и установить обновление автоматически?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans == QMessageBox.StandardButton.Yes:
+            self._start_auto_update(manifest_data)
+
+    def _start_auto_update(self, manifest_data: dict):
+        from backend.updater import UpdateDownloadWorker
+        self.trans_win.show_translation("[Скачивание обновления в фоне...]")
+        self.trans_win.set_status("busy", "Обновление…")
+
+        self._update_worker = UpdateDownloadWorker(manifest_data)
+        self._update_worker.failed.connect(self._on_update_failed)
+        self._update_worker.finished.connect(self._on_update_ready_to_restart)
+        self._update_worker.start_download()
+
+    def _on_update_failed(self, error_msg: str):
+        self.trans_win.set_status("error", "Ошибка обновления")
+        self.trans_win.show_translation(f"[Не удалось обновить: {_short(error_msg)}]")
+
+    def _on_update_ready_to_restart(self):
+        self.trans_win.show_translation("[Обновление готово! Перезапуск...]")
+        # Завершаем приложение для замены файлов
+        QTimer.singleShot(800, self.exit_app)
 
     # ---------- выход ----------
     def exit_app(self):
