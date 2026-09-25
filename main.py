@@ -193,7 +193,7 @@ class AppController(QObject):
                 2500,
             )
 
-        self.update_available.connect(self._prompt_user_update)
+        self.update_available.connect(self._on_update_available)
         from backend.updater import UpdateCheckTask
         task = UpdateCheckTask(lambda data: self.update_available.emit(data))
         QThreadPool.globalInstance().start(task)

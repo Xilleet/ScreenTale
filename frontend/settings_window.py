@@ -67,14 +67,31 @@ class _UpdateBanner(QFrame):
         # Верхняя строчка: Заголовок + Крестик закрытия
         top_h = QHBoxLayout()
         top_h.setContentsMargins(0, 0, 0, 0)
-        self.lbl_title = QLabel("🚀 Доступно обновление ScreenTale")
+        self.lbl_title = QLabel("Доступно обновление ScreenTale")
         self.lbl_title.setStyleSheet("font-weight: 600; font-size: 13px; color: #f2ede4;")
         top_h.addWidget(self.lbl_title, 1)
 
+        # Внутри _UpdateBanner.__init__:
+
         btn_close = QPushButton("✕")
-        btn_close.setObjectName("Ghost")
+        btn_close.setObjectName("BannerCloseBtn")
         btn_close.setFixedSize(22, 22)
         btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.setStyleSheet("""
+            QPushButton#BannerCloseBtn {
+                background: transparent;
+                border: none;
+                border-radius: 4px;
+                color: #9c9388;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 0px;
+            }
+            QPushButton#BannerCloseBtn:hover {
+                background: rgba(224, 142, 69, 0.25);
+                color: #f2ede4;
+            }
+        """)
         btn_close.clicked.connect(self._on_close)
         top_h.addWidget(btn_close)
         v.addLayout(top_h)
@@ -102,7 +119,7 @@ class _UpdateBanner(QFrame):
     def show_update(self, manifest_data: dict):
         self._manifest_data = manifest_data
         ver = manifest_data.get("version", "")
-        self.lbl_title.setText(f"🚀 Доступна новая версия ScreenTale v{ver}!")
+        self.lbl_title.setText(f"Доступна новая версия ScreenTale v{ver}!")
         self.show()
 
     def _on_update(self):
