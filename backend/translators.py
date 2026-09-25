@@ -198,23 +198,21 @@ class _OpusTranslator:
         return self.tokenizer.batch_decode(out, skip_special_tokens=True)[0]
 
     def translate(self, text: str) -> str:
-        """Главный метод: режет длинный текст на предложения и переводит по очереди."""
+        import html
         sentences = _split_into_sentences(text)
         if not sentences:
             return ""
         if len(sentences) == 1:
-            return self._translate_single(sentences[0])
-        
-        # Переводим каждую фразу отдельно и склеиваем через пробел
+            return html.unescape(self._translate_single(sentences[0]))
         results = [self._translate_single(s) for s in sentences]
-        return " ".join(results)
+        return html.unescape(" ".join(results))
 
 
 class _NllbTranslator(_OpusTranslator):
     SRC, DST = "eng_Latn", "rus_Cyrl"
 
     def _translate_single(self, text: str) -> str:
-        """Перевод одного предложения для NLLB."""
+        import html
         inputs = self.tokenizer(text, return_tensors="pt", padding=True,
                                 truncation=True, max_length=512)
         inputs = inputs.to(self.device)
@@ -224,7 +222,8 @@ class _NllbTranslator(_OpusTranslator):
             bos = self.tokenizer.convert_tokens_to_ids(self.DST)
         out = self.model.generate(**inputs, forced_bos_token_id=bos,
                                   max_length=512, no_repeat_ngram_size=3)
-        return self.tokenizer.batch_decode(out, skip_special_tokens=True)[0]
+        res = self.tokenizer.batch_decode(out, skip_special_tokens=True)[0]
+        return html.unescape(res)
 
 def _clean_download_name(name: str) -> str:
     """Очищает технические сообщения Hugging Face (например, 'Fetching 11 files')."""

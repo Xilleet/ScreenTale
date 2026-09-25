@@ -33,8 +33,13 @@ from backend.config import SettingsManager
 from backend.hotkeys import HotkeyManager
 from backend.ocr import OcrWorker
 from backend.translators import (
+    ENGINE_LABELS,
     LOCAL_ENGINES,
     ModelManager,
+    clear_all_cache,
+    delete_model_cache,
+    get_available_offline_engine,
+    is_model_cached,
     is_network_error,
     translate_online,
 )
@@ -131,16 +136,17 @@ class AppController(QObject):
         self._req_seq = 0
         self._last_source = ""
         self._fallback_active = False
-        # Буфер переводов с метками времени: {seq: [timestamp, source, translation|None]}
-        # Позволяет показывать устаревшие переводы в правильном порядке с меткой
-        # времени отправки — как в чате. Юзер не теряет контекст в динамичных
-        # субтитрах / визуальных новеллах.
         self._pending_translations = {}
         self._last_shown_seq = 0
         self._pending_fallback = None
 
+        # FIFO-очередь ожидания загрузки модели
+        self._loading_queue = []
+        self._model_loading = False
+
         self.model_manager = ModelManager(bool(self.settings.get("gpu", False)))
         self.model_manager.progress_started.connect(self.settings_win.model_load_started)
+        self.model_manager.progress_started.connect(self._on_model_load_started)
         self.model_manager.progress.connect(self.settings_win.model_progress)
         self.model_manager.ready.connect(self.settings_win.model_loaded)
         self.model_manager.ready.connect(self._on_model_ready)
@@ -148,9 +154,6 @@ class AppController(QObject):
         self.model_manager.failed.connect(self._on_model_failed)
         self.model_manager.translation_result.connect(self._apply_translation_result)
         self.model_manager.start()
-        self.settings_win.download_model_requested.connect(self.model_manager.load)
-        self.settings_win.delete_model_requested.connect(self._on_delete_model)
-        self.settings_win.clear_all_cache_requested.connect(self._on_clear_all_cache)
 
            # --- Авто-режим ---
         self._auto_active = False
@@ -168,7 +171,6 @@ class AppController(QObject):
         #     self.model_manager.load(engine)
 
         # грузим в память ТОЛЬКО если модель уже реально скачана
-        from backend.translators import is_model_cached
         engine = self.settings.get("translator", "google")
         if engine in LOCAL_ENGINES:
             is_c, _ = is_model_cached(engine)
@@ -201,6 +203,7 @@ class AppController(QObject):
         elif action == "stop":
             self._req_seq += 1
             self._pending_translations.clear()
+            self._loading_queue.clear()  # сбрасываем FIFO-очередь
             self.trans_win.set_status("off", "Ожидание")
             self.trans_win.show_translation("[Перевод остановлен]")
         elif action == "clear":
@@ -208,6 +211,7 @@ class AppController(QObject):
             self.trans_win.show_translation("[История очищена]")
         elif action == "ghost":
             self.trans_win.toggle_ghost_mode()
+        
 
     # ---------- выделение области и OCR ----------
     def _start_selection(self):
@@ -263,26 +267,24 @@ class AppController(QObject):
             if text.startswith("["):
                 return
             norm = " ".join(text.lower().split())
-            # Если новый текст НАЧИНАЕТСЯ с предыдущего — это «печатается»
-            # (Many people dre → Many people dream of...). НЕ отправляем
-            # новый seq, перезапускаем debounce. Ждём, пока текст
-            # «успокоится» — отправляем только финальный вариант.
-            # Это убирает промежуточные seq при печати в реальном времени.
+            # 1. Если этот текст уже был только что переведен — игнорируем
+            if getattr(self, "_last_sent_auto_text", "") == norm:
+                return
+            # 2. Печатающийся текст (эффект пишущей машинки)
             if self._last_auto_text and norm.startswith(self._last_auto_text):
                 self._last_auto_text = norm
                 self._pending_auto_text = text
                 self._auto_timer.start(int(self.settings.get("auto_delay_ms", 800)))
                 return
-            # Стандартная дедупликация: если текст почти не изменился (97%) — игнор
+            # 3. Дедупликация схожести > 96%
             if self._last_auto_text and SequenceMatcher(
-                    None, norm, self._last_auto_text).ratio() > 0.97:
+                    None, norm, self._last_auto_text).ratio() > 0.96:
                 return
             self._last_auto_text = norm
             self._pending_auto_text = text
             self._auto_timer.start(int(self.settings.get("auto_delay_ms", 800)))
             return
 
-        # одиночный режим: показать перевод в текущей позиции окна
         self.trans_win.show_translation(text)
         if text.startswith("["):
             return
@@ -447,6 +449,8 @@ class AppController(QObject):
             self._auto_worker = None
         self._last_auto_text = ""
         self._pending_auto_text = ""
+        self._last_sent_auto_text = ""
+        self._pending_auto_text = ""
         # Очистить буфер переводов и счётчик показанных — между сессиями
         # авто-режима не копим устаревшие переводы. _req_seq НЕ сбрасываем,
         # чтобы переводы от старой сессии (если придут с задержкой) не попали
@@ -457,6 +461,7 @@ class AppController(QObject):
         # сессии _flush_pending искал первый новый seq, а не было seq=1.
         # Раньше был = 0, и при новой сессии (seq=7+) буфер
         # искал seq=1, не находил и вечно ждал — ничего не показывалось.
+        self._loading_queue.clear()  # сбрасываем FIFO-очередь
         self._last_shown_seq = self._req_seq
         # Снять запрет на перетаскивание — без авто-режима нет bbox
         self.trans_win.set_forbidden_rect(None)
@@ -511,6 +516,11 @@ class AppController(QObject):
         self._pending_auto_text = ""
         if not text.strip():
             return
+        norm = " ".join(text.lower().split())
+        # Защита от повторной отправки дубликата
+        if getattr(self, "_last_sent_auto_text", "") == norm:
+            return
+        self._last_sent_auto_text = norm
         self._last_source = text
         self._request_translation(text)
 
@@ -522,13 +532,16 @@ class AppController(QObject):
         seq = self._req_seq
         engine = self.settings.get("translator", "google")
         print(f"[ctrl] запрос перевода: движок={engine}, seq={seq}")
-        # Записать в буфер: (strftime для метки, monotonic для таймаута,
-        # исходный текст, перевод=None)
         self._pending_translations[seq] = [
             time.strftime("%H:%M:%S"), time.monotonic(), text, None]
-        # Статус: отправили в перевод — показать «Перевод…»
         self.trans_win.set_status("busy", "Перевод…")
+
         if engine in LOCAL_ENGINES:
+            # Если локальная модель сейчас загружается — копим в FIFO-очередь
+            if self._model_loading:
+                print(f"[ctrl] модель загружается -> seq={seq} добавлен в FIFO-очередь")
+                self._loading_queue.append(seq)
+                return
             self.model_manager.translate(text, seq)
         else:
             task = _OnlineTask(engine, text, seq,
@@ -566,97 +579,138 @@ class AppController(QObject):
                     print(f"[warn] не удалось скопировать перевод в буфер: {_e}")
 
     def _flush_pending_translations(self):
-        """Показать переводы из буфера в порядке seq, начиная с
-        _last_shown_seq + 1. Если seq ожидается дольше
-        TRANSLATION_TIMEOUT_SEC — помечаем как «(нет перевода)» и
-        продолжаем со следующего (чтобы буфер не блокировался
-        навсегда, если переводчик не ответил на какой-то seq).
-
-        Формат: "[HH:MM:SS] translation". Для потерянных seq:
-        "[HH:MM:SS] (нет перевода: source)".
-        """
         now_mono = time.monotonic()
         while True:
             next_seq = self._last_shown_seq + 1
             entry = self._pending_translations.get(next_seq)
             if entry is None:
-                return   # нет такой записи (возможно, ещё не отправлена)
-            # Формат: [strftime, monotonic, source, translation]
+                return
             timestamp, sent_mono, source, translation = entry
             if translation is None:
-                # Перевода ещё нет. Проверим, не истекло ли время ожидания.
+                if next_seq in self._loading_queue:
+                    return
                 if now_mono - sent_mono < TRANSLATION_TIMEOUT_SEC:
-                    return   # ещё ждём
-                # Время истекло — помечаем как потерянный, продолжаем
+                    return
                 print(f"[ctrl] seq={next_seq} ожидание истекло "
                       f"({now_mono - sent_mono:.1f} сек) — помечаем как нет перевода")
-                self.trans_win.show_translation(
-                    f"({timestamp}) (нет перевода: {source[:30]}...)")
+                self.trans_win.show_translation(f"[Нет перевода: {source[:30]}...]")
                 del self._pending_translations[next_seq]
                 self._last_shown_seq = next_seq
                 continue
-            # Перевод есть — показать с меткой времени отправки
-            self.trans_win.show_translation(f"({timestamp}) {translation}")
+
+            # 1. Если это тихий пропуск (после сбоя сети) — просто удаляем и идем дальше
+            if translation == "[skip]":
+                del self._pending_translations[next_seq]
+                self._last_shown_seq = next_seq
+                continue
+
+            # 2. Служебные сообщения идут в тост
+            if translation.startswith("["):
+                self.trans_win.show_translation(translation)
+            else:
+                self.trans_win.show_translation(f"({timestamp}) {translation}")
+
             del self._pending_translations[next_seq]
             self._last_shown_seq = next_seq
 
     def _on_translation_failed(self, seq, engine, error):
-        if seq != self._req_seq:
-            return
-        self.trans_win.set_status("error", "Ошибка")
+        print(f"[ctrl] сбой перевода seq={seq} (движок {engine}): {error}")
+
+        # 1. ОБЯЗАТЕЛЬНО записываем ошибку в буфер, чтобы очередь не застревала на этом номере!
+        if seq in self._pending_translations:
+            self._pending_translations[seq][3] = f"[Ошибка ({engine}): {_short(error)}]"
+        self._flush_pending_translations()
+        
+        # 2. Продвигаем очередь дальше
+        self._flush_pending_translations()
+
+        # 3. Обновляем статус только если это актуальный текущий запрос
+        if seq == self._req_seq:
+            self.trans_win.set_status("error", "Ошибка")
+
+        # 4. Логика умного переключения на офлайн (Fallback) при падении сети
         if self._fallback_active or not is_network_error(error):
-            self._apply_translation_result(seq, f"[Ошибка перевода: {_short(error)}]")
             return
 
-        # Сеть упала: проверяем, есть ли готовая офлайн-модель на диске
-        from backend.translators import ENGINE_LABELS, get_available_offline_engine
         available_engine = get_available_offline_engine(preferred="opus")
-
         if available_engine is None:
             self._apply_translation_result(
                 seq, "[Интернет недоступен, а офлайн-модель не скачана. Скачайте её в Настройках]")
             self.trans_win.set_status("error", "Нет сети и модели")
             return
 
+        # Если упала сеть и есть офлайн-модель — тихо переключаемся, не мусоря юзеру ошибками
+        if not self._fallback_active and is_network_error(error):
+            available_engine = get_available_offline_engine(preferred="opus")
+            if available_engine is not None:
+                # 1. Помечаем упавший онлайн-запрос как тихий пропуск [skip]
+                if seq in self._pending_translations:
+                    self._pending_translations[seq][3] = "[skip]"
+                self._flush_pending_translations()
+
+                # 2. Бесшовно переводим через офлайн-модель
+                self._fallback_active = True
+                self._pending_fallback = self._last_source
+                self.trans_win.show_translation(
+                    f"[Интернет недоступен — переключаюсь на офлайн ({ENGINE_LABELS.get(available_engine)})...]"
+                )
+                self.trans_win.set_status("busy", "Переключение на офлайн…")
+                self.settings.set("translator", available_engine)
+                return
+
         self._fallback_active = True
         self._pending_fallback = self._last_source
-        self.trans_win.show_translation(f"[Интернет недоступен — переключаюсь на офлайн ({ENGINE_LABELS.get(available_engine)})...]")
+        self.trans_win.show_translation(
+            f"[Интернет недоступен — переключаюсь на офлайн ({ENGINE_LABELS.get(available_engine)})...]"
+        )
         self.trans_win.set_status("busy", "Переключение на офлайн…")
         self.settings.set("translator", available_engine)
         
+    def _on_model_load_started(self):
+        """Модель начала скачивание/загрузку в память."""
+        self._model_loading = True
+        print("[ctrl] статус модели: загрузка началась -> включен режим накопления очереди")
+
     def _on_model_ready(self, engine_id):
-        # Гонка: сеть упала -> контроллер сам переключил на 'opus' (fallback).
-        # Пока opus качался, юзер мог вручную выбрать другой движок в UI.
-        # Тогда ready приходит для нового движка, а _pending_fallback хранит
-        # текст, который мы хотели перевести именно через opus. Переводить его
-        # через другой движок — неожиданно для юзера. Отменяем fallback.
-        if not self._fallback_active or not self._pending_fallback:
-            return
-        if engine_id != "opus":
-            # Юзер сам переключил движок — откатываем флаги, не переводим.
-            # Юзер знает, что делает: если ему нужен перевод — нажмёт Alt+Q снова.
-            self._fallback_active = False
-            self._pending_fallback = None
-            self.trans_win.show_translation(
-                "[Переключение на офлайн-модель отменено — выбран другой движок]")
-            return
-        # opus загрузился — переводим отложенный текст
-        text = self._pending_fallback
-        self._pending_fallback = None
-        self._fallback_active = False
-        # Статус: модель готова — перевыпуск отложенного запроса.
-        # _request_translation сам поставит «Перевод…» дальше.
+        self._model_loading = False
+        print(f"[ctrl] модель {engine_id} готова к работе!")
         self.trans_win.set_status("ok", "Модель готова")
-        self._request_translation(text)
+
+        # 1. Разгружаем накопившуюся FIFO-очередь строго по порядку
+        if self._loading_queue:
+            print(f"[ctrl] разгрузка FIFO-очереди ({len(self._loading_queue)} фраз)...")
+            while self._loading_queue:
+                q_seq = self._loading_queue.pop(0)
+                if q_seq in self._pending_translations:
+                    q_text = self._pending_translations[q_seq][2]
+                    self.model_manager.translate(q_text, q_seq)
+
+        # 2. Обработка отложенного текста fallback
+        if self._fallback_active and self._pending_fallback:
+            if engine_id not in LOCAL_ENGINES:
+                self._fallback_active = False
+                self._pending_fallback = None
+                return
+            text = self._pending_fallback
+            self._pending_fallback = None
+            self._fallback_active = False
+            self._request_translation(text)
 
     def _on_model_failed(self, engine_id, error):
-        """Офлайн-модель не загрузилась (например, её нет в кэше и нет сети)."""
+        self._model_loading = False
+        # При ошибке загрузки сбрасываем всю накопившуюся очередь с понятным сообщением
+        if self._loading_queue:
+            print(f"[ctrl] сбой модели {engine_id} -> сброс {len(self._loading_queue)} запросов в очереди")
+            while self._loading_queue:
+                q_seq = self._loading_queue.pop(0)
+                self._apply_translation_result(
+                    q_seq, f"[Перевод не удался: сбой загрузки модели {engine_id}]")
+
         if self._fallback_active:
             self._fallback_active = False
             self._pending_fallback = None
             self.trans_win.show_translation(
                 f"[Не удалось переключиться на офлайн-модель: {_short(error)}]")
-            # Статус: модель не загрузилась — авто-сброс в 'off' через 3 сек
             self.trans_win.set_status("error", "Модель не загрузилась")
 
     # ---------- настройки ----------
@@ -676,14 +730,12 @@ class AppController(QObject):
                 self.settings_win.model_finished("off", "Локальная модель не загружена")
 
     def _on_delete_model(self, engine_id):
-        from backend.translators import delete_model_cache
         self.model_manager.unload()
         delete_model_cache(engine_id)
         self.settings_win._update_cache_display()
         self.settings_win.toast.show_toast("Модель успешно удалена")
 
     def _on_clear_all_cache(self):
-        from backend.translators import clear_all_cache
         self.model_manager.unload()
         clear_all_cache()
         self.settings_win._update_cache_display()

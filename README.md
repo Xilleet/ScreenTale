@@ -7,7 +7,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://python.org)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)](https://microsoft.com)
-[![Status](https://img.shields.io/badge/Status-v0.4.4-green)](https://github.com/Xilleet/ScreenTale)
+[![Status](https://img.shields.io/badge/Status-v0.4.5--dev-orange)](https://github.com/Xilleet/ScreenTale)
 
 <br/>
 
@@ -74,7 +74,7 @@ p.s. На данном этапе есть только одностороння
 
 🗺️ Дорожная карта (Roadmap)
 
-v0.4.5 — FIFO-очередь диалогов (защита от потери реплик при обрыве сети).
+v0.4.5 — FIFO-очередь диалогов (защита от потери реплик при обрыве сети), автообновление проги.
 
 v0.5.0 — Внедрение Windows OCR (WinRT API).
 
