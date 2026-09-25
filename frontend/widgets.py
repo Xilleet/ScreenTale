@@ -381,7 +381,16 @@ class Toast(QLabel):
         if parent:
             avail_w = parent.width() - self._left_offset
             x = self._left_offset + (avail_w - self.width()) // 2
-            self.move(x, parent.height() - self.height() - 22)
+            
+            # Базовый отступ снизу
+            y = parent.height() - self.height() - 22
+            
+            # Если в SettingsWindow открыт баннер обновления — поднимаем тост выше баннера
+            if hasattr(parent, "update_banner") and parent.update_banner.isVisible():
+                banner_h = parent.update_banner.height()
+                y = parent.height() - self.height() - banner_h - 32
+                
+            self.move(x, y)
 
     def _fade_out(self):
         self._anim.stop()
