@@ -114,13 +114,15 @@
    python main.py
 
 
-🗺️ Дорожная карта (Roadmap)
+🗺️ Общая дорожная карта (Roadmap)
 
 - [x] v0.4.5 — FIFO-очередь диалогов (защита от потери реплик при обрыве сети), автообновление проги.
 
 - [x] v0.5.0 — Внедрение Windows OCR (WinRT API).
 
-- [x] v0.6.0 — Каталог моделей GGUF (Qwen 2.5 / Sakura) через llama.cpp на CPU.
+- [ ] v0.6.0 — Каталог моделей GGUF (Qwen 2.5 / Sakura) через llama.cpp на CPU.
+
+- [ ] v0.7.0 — In-Place Оверлей
 
 <div align="center">
 
