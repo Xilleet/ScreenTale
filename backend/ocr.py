@@ -9,7 +9,8 @@ import os
 import queue
 import re
 
-from PIL import Image
+import numpy as np
+from PIL import Image, ImageGrab
 from PySide6.QtCore import QThread, Signal
 
 from backend.config import get_data_dir
@@ -190,9 +191,6 @@ class OcrWorker(QThread):
             self.read_result.emit(bbox, "[OCR-модель ещё не готова, попробуйте через несколько секунд]", context)
             return
         try:
-            import numpy as np
-            from PIL import ImageGrab
-
             left, top, right, bottom = bbox
             scale = get_screen_scale()
             physical = (int(left * scale), int(top * scale),

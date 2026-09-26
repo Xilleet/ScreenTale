@@ -696,12 +696,6 @@ class SettingsWindow(QWidget):
         if ans == QMessageBox.StandardButton.Yes:
             self.clear_all_cache_requested.emit()
 
-    def _on_translator_changed(self, ident):
-        self.translator_hint.setText(TRANSLATOR_HINTS.get(ident, ""))
-        self.settings.set("translator", ident)
-        self._update_cache_display()
-        self._saved_timer.start()
-
     def model_finished(self, state, message):
         self.model_bar.hide()
         self.model_hint.hide()

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import urllib.request
 
 from PySide6.QtCore import QObject, QRunnable, Signal
@@ -70,7 +71,6 @@ class UpdateDownloadWorker(QObject):
         self.manifest_data = manifest_data
 
     def start_download(self):
-        import threading
         t = threading.Thread(target=self._run, daemon=True)
         t.start()
 

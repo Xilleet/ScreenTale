@@ -194,14 +194,6 @@ QFrame#UpdateBanner QLabel {
     background: transparent;
 }
 /* Кнопка «Обновить сейчас» остается фирменной янтарной */
-QPushButton#UpdateBtn {
-    background-color: @accent;
-    color: #1a1816;
-    font-weight: 600;
-    border: none;
-    border-radius: 7px;
-    padding: 6px 14px;
-}
 QPushButton#UpdateBtn:hover {
     background-color: #f59e0b;
 }

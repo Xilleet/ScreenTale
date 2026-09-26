@@ -1,8 +1,11 @@
 """ScreenTale v0.4.3 — точка входа и контроллер приложения."""
+import ctypes
+import datetime
 import multiprocessing
 import os
 import sys
 import time
+import traceback
 from difflib import SequenceMatcher
 
 # --- Логирование ДО ВСЕХ тяжёлых импортов ---
@@ -19,6 +22,7 @@ from PySide6.QtCore import (
     QDir,
     QLockFile,
     QObject,
+    QRect,
     QRunnable,
     Qt,
     QThreadPool,
@@ -201,11 +205,6 @@ class AppController(QObject):
         self.settings_win.update_banner.update_clicked.connect(self._start_auto_update)
         self.settings_win.update_banner.snooze_clicked.connect(self._on_update_snoozed)
 
-        self.update_available.connect(self._on_update_available)
-        from backend.updater import UpdateCheckTask
-        task = UpdateCheckTask(lambda data: self.update_available.emit(data))
-        QThreadPool.globalInstance().start(task)
-
     # ---------- хоткеи ----------
     def _on_hotkey(self, action):
         if action == "toggle_window":
@@ -250,7 +249,6 @@ class AppController(QObject):
         x, y, _ = self._compute_trans_window_pos(bbox)
 
         # 2. Включаем запретную зону: окно физически не сможет заехать внутрь bbox (как в авто-режиме)
-        from PySide6.QtCore import QRect
         bbox_rect = QRect(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1])
         self.trans_win.set_forbidden_rect(bbox_rect)
 
@@ -263,9 +261,7 @@ class AppController(QObject):
 
         # 5. Отправляем в OCR
         self.ocr.read(bbox)
-
         self._last_bbox = bbox
-        self.ocr.read(bbox)
 
     def _on_selection_cancel(self):
         self._is_selecting = False
@@ -353,7 +349,6 @@ class AppController(QObject):
         # Окно не скрыто юзером — позиционируем над/под/слева/справа от bbox
         x, y, intersects = self._compute_trans_window_pos(bbox)
         # Запретить перетаскивание окна в bbox (прилипание к границе снаружи)
-        from PySide6.QtCore import QRect
         bbox_rect = QRect(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1])
         self.trans_win.set_forbidden_rect(bbox_rect)
         self.trans_win.show_translation(
@@ -380,7 +375,6 @@ class AppController(QObject):
           intersects_bbox=True — ни одна сторона не вместила, окно наезжает
           на bbox. В этом случае вызывающий код покажет toast-предупреждение.
         """
-        from PySide6.QtWidgets import QApplication
         left, top, right, bottom = bbox
         win_w, win_h = 420, 120   # из translate_window.py
         SHADOW_MARGIN = 10
@@ -495,7 +489,6 @@ class AppController(QObject):
         """Возвращает True, если frameGeometry окна перевода пересекается
         с текущим bbox OCR. Используется для предупреждения юзера.
         """
-        from PySide6.QtCore import QRect
         if self.trans_win is None or self._auto_bbox is None:
             return False
         if not self.trans_win.isVisible():
@@ -508,7 +501,6 @@ class AppController(QObject):
     def _warn_window_in_bbox(self):
         """Показать toast в трее, если окно перевода пересекает bbox.
         Не спамим — не чаще раза в 30 секунд."""
-        import time
         now = time.monotonic()
         last = getattr(self, "_last_bbox_warning", 0)
         if now - last < 30.0:
@@ -732,7 +724,6 @@ class AppController(QObject):
         if key == "gpu":
             self.ocr.request_gpu(bool(value))
         elif key == "translator":
-            from backend.translators import is_model_cached
             if value in LOCAL_ENGINES:
                 is_c, _ = is_model_cached(value)
                 if is_c:
@@ -822,7 +813,6 @@ class AppController(QObject):
 
     def _on_update_available(self, manifest_data: dict):
         """Проверяет дату отсрочки и показывает встроенный баннер."""
-        import datetime
         snooze_str = self.settings.get("update_snooze_until")
         if snooze_str:
             try:
@@ -839,7 +829,6 @@ class AppController(QObject):
 
     def _on_update_snoozed(self, manifest_data: dict):
         """Откладывает показ обновления ровно на 7 дней."""
-        import datetime
         today = datetime.datetime.now(datetime.timezone.utc).date()
         snooze_date = (today + datetime.timedelta(days=7)).isoformat()
         self.settings.set("update_snooze_until", snooze_date)
@@ -898,7 +887,6 @@ class AppController(QObject):
 
 def main():
     try:
-        import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("screentale.app.1")
     except Exception:
         pass
@@ -922,7 +910,6 @@ def main():
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    import traceback
     try:
         main()
     except Exception:
