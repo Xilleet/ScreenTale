@@ -2,6 +2,7 @@ import os
 import sys
 
 from PySide6.QtCore import Qt, QTimer, Signal, qVersion
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -311,16 +312,47 @@ class SettingsWindow(QWidget):
         frame.setObjectName("Sidebar")
         frame.setFixedWidth(200)
         v = QVBoxLayout(frame)
-        v.setContentsMargins(14, 18, 14, 14)
+        v.setContentsMargins(12, 16, 12, 14)
         v.setSpacing(4)
+
+        # Горизонтальный блок: Логотип + (Название + Версия)
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+
+        # 1. Поиск и отрисовка logo.png
+        logo_path = os.path.join(get_app_dir(), "logo.png")
+        if not os.path.exists(logo_path) and hasattr(sys, "_MEIPASS"):
+            logo_path = os.path.join(sys._MEIPASS, "logo.png")
+
+        if os.path.exists(logo_path):
+            logo_lbl = QLabel()
+            pix = QPixmap(logo_path).scaled(
+                64, 64,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            logo_lbl.setPixmap(pix)
+            logo_lbl.setFixedSize(64, 64)
+            header_layout.addWidget(logo_lbl)
+
+        # 2. Текстовая колонка
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(2)
+        text_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         title = QLabel("ScreenTale")
         title.setObjectName("AppTitle")
         ver = QLabel(f"версия {APP_VERSION}")
         ver.setObjectName("Version")
-        v.addWidget(title)
-        v.addWidget(ver)
-        v.addSpacing(12)
+
+        text_layout.addWidget(title)
+        text_layout.addWidget(ver)
+        header_layout.addLayout(text_layout, 1)
+
+        v.addLayout(header_layout)
+        v.addSpacing(14)
 
         self.nav = QListWidget()
         self.nav.setObjectName("Nav")
