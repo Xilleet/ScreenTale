@@ -34,6 +34,7 @@ STATUS_AUTO_RESET_ERR_MS = 3000
 # ============================================================
 class _FloatingToolbar(QFrame):
     retry_clicked = Signal()
+    pause_clicked = Signal()
     stop_clicked = Signal()
     clear_clicked = Signal()
     ghost_clicked = Signal()
@@ -78,6 +79,13 @@ class _FloatingToolbar(QFrame):
         self.btn_retry.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_retry.clicked.connect(self.retry_clicked.emit)
 
+        # Новая кнопка Паузы:
+        self.btn_pause = QPushButton("⏸")
+        self.btn_pause.setObjectName("ToolbarBtn")
+        self.btn_pause.setToolTip("Пауза авто-перевода (Alt+P)")
+        self.btn_pause.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_pause.clicked.connect(self.pause_clicked.emit)
+
         self.btn_stop = QPushButton("■")
         self.btn_stop.setObjectName("ToolbarBtn")
         self.btn_stop.setToolTip("Остановить перевод (Alt+C)")
@@ -97,9 +105,18 @@ class _FloatingToolbar(QFrame):
         self.btn_ghost.clicked.connect(self.ghost_clicked.emit)
 
         lay.addWidget(self.btn_retry)
+        lay.addWidget(self.btn_pause)
         lay.addWidget(self.btn_stop)
         lay.addWidget(self.btn_clear)
         lay.addWidget(self.btn_ghost)
+
+    def set_pause_active(self, paused: bool):
+        """Переключает иконку и подсветку кнопки паузы."""
+        self.btn_pause.setText("▶" if paused else "⏸")
+        self.btn_pause.setToolTip("Продолжить авто-перевод (Alt+P)" if paused else "Пауза авто-перевода (Alt+P)")
+        self.btn_pause.setProperty("active", bool(paused))
+        self.btn_pause.style().unpolish(self.btn_pause)
+        self.btn_pause.style().polish(self.btn_pause)
 
     def set_ghost_active(self, active: bool):
         self.btn_ghost.setProperty("active", bool(active))
@@ -229,6 +246,7 @@ class TranslateWindow(QWidget):
     retry_requested = Signal()
     stop_requested = Signal()
     clear_requested = Signal()
+    pause_requested = Signal()
 
     def __init__(self, settings):
         super().__init__()
@@ -323,6 +341,11 @@ class TranslateWindow(QWidget):
         # ВАЖНО: задаем размер в самом конце, когда ВСЕ виджеты уже созданы
         self.resize(420, 120)
         self._reposition_overlays()
+
+        self.toolbar.pause_clicked.connect(self.pause_requested.emit)
+
+    def set_auto_pause_state(self, paused: bool):
+        self.toolbar.set_pause_active(paused)
 
     # ---------- позиционирование плавающих элементов ----------
     def _reposition_overlays(self):

@@ -6,7 +6,7 @@ import sys
 
 from PySide6.QtCore import QObject, Signal
 
-APP_VERSION = "0.5.0-beta"
+APP_VERSION = "0.5.0"
 
 
 def get_app_dir() -> str:
@@ -42,6 +42,7 @@ DEFAULTS = {
         # mods — флаги RegisterHotKey, vk — виртуальный код Windows
         "single":        {"label": "Alt+Q",  "mods": 0x0001, "vk": 0x51},
         "auto":          {"label": "Alt+W",  "mods": 0x0001, "vk": 0x57},
+        "pause":         {"label": "Alt+P",  "mods": 0x0001, "vk": 0x50},
         "toggle_window": {"label": "Ctrl+`", "mods": 0x0002, "vk": 0xC0},
         "stop":          {"label": "Alt+C",  "mods": 0x0001, "vk": 0x43},
         "clear":         {"label": "Alt+X",  "mods": 0x0001, "vk": 0x58},

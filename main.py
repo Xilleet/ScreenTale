@@ -109,8 +109,10 @@ class AppController(QObject):
         self._last_bbox = None
         self.trans_win.stop_requested.connect(lambda: self._on_hotkey("stop"))
         self.trans_win.clear_requested.connect(lambda: self._on_hotkey("clear"))
+        self.trans_win.pause_requested.connect(lambda: self._on_hotkey("pause"))
         self.trans_win.retry_requested.connect(self._retry_last_translation)
         self.settings_win = SettingsWindow(self.settings, self.hotkeys, on_exit=self.exit_app)
+        self._auto_paused = False
 
         # Применить verbose-флаг из настроек к logging_setup (глобальный флаг VERBOSE)
         set_verbose(bool(self.settings.get("verbose_log", False)))
@@ -206,6 +208,31 @@ class AppController(QObject):
         self.settings_win.update_banner.update_clicked.connect(self._start_auto_update)
         self.settings_win.update_banner.snooze_clicked.connect(self._on_update_snoozed)
 
+        
+
+    def _toggle_pause_auto(self):
+        if not self._auto_active:
+            self.trans_win.show_translation("[Авто-режим не запущен]")
+            return
+
+        self._auto_paused = not self._auto_paused
+        self.trans_win.set_auto_pause_state(self._auto_paused)
+
+        if self._auto_paused:
+            self._auto_timer.stop()
+            self.trans_win.set_status("busy", "Авто: Пауза")
+            self.trans_win.show_translation("[Авто-режим на паузе (Alt+P для продолжения)]")
+            print("[auto] режим поставлен на паузу")
+        else:
+            self.trans_win.set_status("ok", "Авто: Активен")
+            self.trans_win.show_translation("[Авто-режим возобновлён]")
+            print("[auto] режим снят с паузы")
+            # Мгновенно читаем кадр, который уже есть на экране, не ожидая прокрутки:
+            if self._auto_bbox is not None:
+                self._last_auto_text = ""
+                self._last_sent_auto_text = ""
+                self.ocr.read(self._auto_bbox, context="auto")
+
     # ---------- хоткеи ----------
     def _on_hotkey(self, action):
         if action == "toggle_window":
@@ -225,6 +252,8 @@ class AppController(QObject):
             self.trans_win.show_translation("[История очищена]")
         elif action == "ghost":
             self.trans_win.toggle_ghost_mode()
+        elif action == "pause":
+            self._toggle_pause_auto()
         
 
     # ---------- выделение области и OCR ----------
@@ -475,11 +504,12 @@ class AppController(QObject):
         # Снять запрет на перетаскивание — без авто-режима нет bbox
         self.trans_win.set_forbidden_rect(None)
         self.trans_win.hide()   # как в v0.3.2: выключение скрывает окно
+        self._auto_paused = False
+        self.trans_win.set_auto_pause_state(False)
 
     def _on_region_changed(self):
-        if not self._auto_active or self._auto_bbox is None:
+        if not self._auto_active or self._auto_bbox is None or self._auto_paused:
             return
-        # Если окно скрыто юзером — не тратим ресурсы на распознавание
         if not self.trans_win.isVisible() or self.trans_win.force_hidden:
             return
         print("[auto] region_changed -> ocr.read()")
@@ -535,6 +565,16 @@ class AppController(QObject):
     def _request_translation(self, text):
         if not text.strip():
             return
+
+        # --- ЗАЩИТА: Лимит очереди ---
+        MAX_PENDING = 3 # нужны тесты, ранее было 2, но возможно поставить и 4
+        untranslated = [s for s, data in self._pending_translations.items() if data[3] is None]
+        if len(untranslated) >= MAX_PENDING:
+            # Сбрасываем самый старый зависший промежуточный кадр
+            oldest_seq = min(untranslated)
+            self._pending_translations[oldest_seq][3] = "[skip]"
+            self._flush_pending_translations()
+
         self._req_seq += 1
         seq = self._req_seq
         engine = self.settings.get("translator", "google")
@@ -544,7 +584,6 @@ class AppController(QObject):
         self.trans_win.set_status("busy", "Перевод…")
 
         if engine in LOCAL_ENGINES:
-            # Если локальная модель сейчас загружается — копим в FIFO-очередь
             if self._model_loading:
                 print(f"[ctrl] модель загружается -> seq={seq} добавлен в FIFO-очередь")
                 self._loading_queue.append(seq)
@@ -557,6 +596,9 @@ class AppController(QObject):
             QThreadPool.globalInstance().start(task)
 
     def _apply_translation_result(self, seq, text):
+        # Если этот запрос уже был показан или пропущен — тихо игнорируем запоздалый ответ:
+        if seq <= self._last_shown_seq:
+            return
         print(f"[ctrl] перевод seq={seq} (ожидался {self._req_seq}): {text[:50]!r}")
         vlog(f"[ctrl] перевод (full) seq={seq} (ожидался {self._req_seq}): {text!r}")
         # Служебные сообщения (начинаются с "[") — показываем как notice,
@@ -725,6 +767,12 @@ class AppController(QObject):
         if key == "gpu":
             self.ocr.request_gpu(bool(value))
         elif key == "translator":
+            # Сбрасываем зависшие хвосты старого движка:
+            self._pending_translations.clear()
+            self._loading_queue.clear()
+            self._last_shown_seq = self._req_seq
+            self.trans_win.set_status("off", "Ожидание")
+
             if value in LOCAL_ENGINES:
                 is_c, _ = is_model_cached(value)
                 if is_c:
