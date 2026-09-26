@@ -5,6 +5,7 @@ from ctypes import wintypes
 from PySide6.QtCore import QPoint, QPropertyAnimation, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
 from frontend.widgets import StatusPill
 
 SHADOW_MARGIN = 10
-TOOLBAR_GAP = 5  # аккуратный зазор между тулбаром и окном перевода
+TOOLBAR_GAP = 6  # зазор между тулбаром и стеклянной рамкой
 MIN_W = 100
 MIN_H = 60
 MAX_HISTORY_LINES = 60
@@ -59,7 +60,6 @@ class _GripButton(QPushButton):
                 self._is_dragging = True
                 self.toolbar.undock()
                 raw_pos = event.globalPosition().toPoint() - self._offset
-                # ЖЕЛЕЗНЫЙ ОГРАНИЧИТЕЛЬ: не выпускаем за пределы экрана/мониторов
                 safe_pos = self.toolbar.clamp_to_screen(raw_pos)
                 self.toolbar.move(safe_pos)
             event.accept()
@@ -69,11 +69,9 @@ class _GripButton(QPushButton):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             if not self._is_dragging:
-                # Одиночный клик: переключаем dock / undock
                 self.toolbar.toggle_dock()
             else:
-                # Завершение перетаскивания: умный 4-сторонний магнит
-                self.toolbar.check_magnetic_dock()
+                self.toolbar.on_drag_finished()
             self._drag_start = None
             self._offset = None
             self._is_dragging = False
@@ -94,7 +92,7 @@ class FloatingToolbar(QFrame):
     dock_changed = Signal(bool)
 
     def __init__(self, target_window=None):
-        super().__init__(None)
+        super().__init__(None)  # parent=None, чтобы жить независимо при скрытом окне перевода
         self.target_window = target_window
         self._is_docked = True
         self._dock_anchor = "top_right"  # top_right | top_left | bottom_right | bottom_left
@@ -106,7 +104,6 @@ class FloatingToolbar(QFrame):
             | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        # ОБЯЗАТЕЛЬНО: заставляет Qt гарантированно рисовать тёмную подложку:
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         self.setStyleSheet("""
@@ -198,24 +195,6 @@ class FloatingToolbar(QFrame):
         lay.addWidget(self.btn_ghost)
         lay.addWidget(self.btn_grip)
 
-    def clamp_to_screen(self, pos: QPoint) -> QPoint:
-        """Не даёт тулбару улететь за границы монитора(-ов), поддерживая multi-monitor setup."""
-        from PySide6.QtWidgets import QApplication
-        screen = QApplication.primaryScreen()
-        if not screen:
-            return pos
-
-        # virtualGeometry покрывает все 1, 2 или 3 подключенных монитора:
-        v_geo = screen.virtualGeometry()
-        w = self.width()
-        h = self.height()
-
-        # Ограничиваем X и Y так, чтобы вся плашка оставалась видна:
-        clamped_x = max(v_geo.left(), min(pos.x(), v_geo.right() - w + 1))
-        clamped_y = max(v_geo.top(), min(pos.y(), v_geo.bottom() - h + 1))
-
-        return QPoint(clamped_x, clamped_y)
-
     def set_pause_active(self, paused: bool):
         self.btn_pause.setText("▶" if paused else "⏸")
         self.btn_pause.setToolTip("Продолжить авто-перевод (Alt+P)" if paused else "Пауза авто-перевода (Alt+P)")
@@ -228,33 +207,22 @@ class FloatingToolbar(QFrame):
         self.btn_ghost.style().unpolish(self.btn_ghost)
         self.btn_ghost.style().polish(self.btn_ghost)
 
-    # ---------- ФИЗИКА КОЛЛИЗИЙ И МАГНИТНОГО ДОКИНГА ----------
-    def resolve_collision(self, raw_pos: QPoint) -> QPoint:
-        """Не даёт тулбару заехать внутрь карточки с текстом (выталкивает наружу)."""
-        if not self.target_window or not self.target_window.isVisible():
-            return raw_pos
+    def clamp_to_screen(self, pos: QPoint) -> QPoint:
+        """Не даёт тулбару улететь за границы монитора(-ов)."""
+        screen = QApplication.primaryScreen()
+        if not screen:
+            return pos
 
-        card_rect = self.target_window.get_card_screen_rect()
-        tb_rect = QRect(raw_pos, self.size())
+        v_geo = screen.virtualGeometry()
+        w = self.width()
+        h = self.height()
 
-        if tb_rect.intersects(card_rect):
-            # Толкаем к ближайшей внешней грани карточки:
-            shift_left = card_rect.left() - self.width() - TOOLBAR_GAP
-            shift_right = card_rect.right() + TOOLBAR_GAP
-            shift_top = card_rect.top() - self.height() - TOOLBAR_GAP
-            shift_bottom = card_rect.bottom() + TOOLBAR_GAP
+        clamped_x = max(v_geo.left(), min(pos.x(), v_geo.right() - w + 1))
+        clamped_y = max(v_geo.top(), min(pos.y(), v_geo.bottom() - h + 1))
 
-            cands = [
-                (shift_left, raw_pos.y(), abs(raw_pos.x() - shift_left)),
-                (shift_right, raw_pos.y(), abs(raw_pos.x() - shift_right)),
-                (raw_pos.x(), shift_top, abs(raw_pos.y() - shift_top)),
-                (raw_pos.x(), shift_bottom, abs(raw_pos.y() - shift_bottom)),
-            ]
-            best_x, best_y, _ = min(cands, key=lambda c: c[2])
-            return QPoint(best_x, best_y)
+        return QPoint(clamped_x, clamped_y)
 
-        return raw_pos
-
+    # ---------- КООРДИНАТЫ 4 ВНЕШНИХ УГЛОВ ДОКИНГА ----------
     def _get_dock_anchor_pos(self, anchor: str) -> QPoint:
         if not self.target_window:
             return self.pos()
@@ -273,10 +241,9 @@ class FloatingToolbar(QFrame):
         else:  # top_right
             raw = QPoint(card.right() - w + 1, card.top() - h - TOOLBAR_GAP)
 
-        # Если окно перевода у самого края монитора — тулбар останется в поле зрения:
         return self.clamp_to_screen(raw)
 
-    def align_to_window(self, parent_geo=None):
+    def align_to_window(self):
         if self._is_docked and self.target_window:
             target_pos = self._get_dock_anchor_pos(self._dock_anchor)
             self.move(target_pos)
@@ -290,7 +257,7 @@ class FloatingToolbar(QFrame):
     def toggle_dock(self):
         if self._is_docked:
             self._is_docked = False
-            self.move(self.x() - 15, max(10, self.y() - 20))
+            self.move(self.x() - 15, max(10, self.y() - 25))
             self.dock_changed.emit(False)
         else:
             self.dock_to_window(self._dock_anchor)
@@ -302,13 +269,16 @@ class FloatingToolbar(QFrame):
             self.align_to_window()
             self.dock_changed.emit(True)
 
-    def check_magnetic_dock(self):
-        """Проверяет примагничивание к любому из 4 внешних углов окна перевода."""
+    def on_drag_finished(self):
+        """Срабатывает при отпускании мыши: умный 4-сторонний магнит и отскок от текста."""
         if not self.target_window or not self.target_window.isVisible():
             return
 
+        card = self.target_window.get_card_screen_rect()
+        tb_rect = QRect(self.pos(), self.size())
+
         anchors = ["top_right", "bottom_right", "top_left", "bottom_left"]
-        best_anchor = None
+        best_anchor = "top_right"
         min_dist = 999999
 
         for a in anchors:
@@ -318,8 +288,13 @@ class FloatingToolbar(QFrame):
                 min_dist = dist
                 best_anchor = a
 
-        # Если тулбар отпустили ближе 38 px к любому из 4 углов — магнитим!
-        if min_dist < 38 and best_anchor:
+        # 1. Если тулбар бросили ПРЯМО ПОВЕРХ ТЕКСТА — отскок к ближайшему углу
+        if tb_rect.intersects(card):
+            self.dock_to_window(best_anchor)
+            return
+
+        # 2. Если отпустили близко (< 45 px) к любому из 4 углов — магнитится к нему:
+        if min_dist < 45:
             self.dock_to_window(best_anchor)
 
 
@@ -465,10 +440,10 @@ class TranslateWindow(QWidget):
 
         self._move_pos = None
         self.force_hidden = False
+        self._is_paused = False  # Железный флаг паузы
         self._forbidden_rect = None
         self._ghost_mode = False
 
-        # Окно перевода чисто содержит только карточку со стеклом:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN)
         outer.setSpacing(0)
@@ -518,7 +493,6 @@ class TranslateWindow(QWidget):
         self._trim_timer.timeout.connect(self._cleanup_history)
         self._trim_timer.start(HISTORY_TRIM_INTERVAL_MS)
 
-        # Создаём независимый парящий тулбар
         self.toolbar = FloatingToolbar(target_window=self)
         self.toolbar.retry_clicked.connect(self.retry_requested.emit)
         self.toolbar.pause_clicked.connect(self.pause_requested.emit)
@@ -526,7 +500,6 @@ class TranslateWindow(QWidget):
         self.toolbar.clear_clicked.connect(self.clear_requested.emit)
         self.toolbar.ghost_clicked.connect(self.toggle_ghost_mode)
 
-        # Настройки размера и шрифта
         settings.changed.connect(self._on_setting_changed)
         self.update_font_size(int(settings.get("font_size", 14)))
         self.update_opacity(float(settings.get("opacity", 0.95)))
@@ -534,29 +507,10 @@ class TranslateWindow(QWidget):
         self.resize(420, 120)
         self._reposition_overlays()
 
-    def clamp_to_screen(self, pos: QPoint) -> QPoint:
-        """Удерживает окно перевода в видимой зоне 1, 2 или 3 мониторов."""
-        from PySide6.QtWidgets import QApplication
-        screen = QApplication.primaryScreen()
-        if not screen:
-            return pos
-
-        v_geo = screen.virtualGeometry()
-        w = self.width()
-        h = self.height()
-
-        # Не даём окну скрыться за краями мониторов:
-        clamped_x = max(v_geo.left(), min(pos.x(), v_geo.right() - w + SHADOW_MARGIN))
-        clamped_y = max(v_geo.top(), min(pos.y(), v_geo.bottom() - h + SHADOW_MARGIN))
-
-        return QPoint(clamped_x, clamped_y)
-
     def get_card_screen_rect(self) -> QRect:
-        """Возвращает точные глобальные экранные координаты карточки с текстом."""
         top_left = self.border_frame.mapToGlobal(QPoint(0, 0))
         return QRect(top_left, self.border_frame.size())
 
-    # ---------- синхронизация положения тулбара и оверлеев ----------
     def _reposition_overlays(self):
         offset = SHADOW_MARGIN + 3
         self.grip.move(
@@ -571,6 +525,20 @@ class TranslateWindow(QWidget):
             self.height() - pill_h - SHADOW_MARGIN - 4,
         )
         self.status_pill.raise_()
+
+    def clamp_to_screen(self, pos: QPoint) -> QPoint:
+        screen = QApplication.primaryScreen()
+        if not screen:
+            return pos
+
+        v_geo = screen.virtualGeometry()
+        w = self.width()
+        h = self.height()
+
+        clamped_x = max(v_geo.left(), min(pos.x(), v_geo.right() - w + SHADOW_MARGIN))
+        clamped_y = max(v_geo.top(), min(pos.y(), v_geo.bottom() - h + SHADOW_MARGIN))
+
+        return QPoint(clamped_x, clamped_y)
 
     def moveEvent(self, event):
         super().moveEvent(event)
@@ -590,7 +558,6 @@ class TranslateWindow(QWidget):
             self.toolbar.align_to_window()
             self.toolbar.raise_()
 
-    # ---------- настройки ----------
     def _on_setting_changed(self, key, value):
         if key == "font_size":
             self.update_font_size(int(value))
@@ -626,7 +593,6 @@ class TranslateWindow(QWidget):
     def update_opacity(self, value):
         self.setWindowOpacity(float(value))
 
-    # ---------- показ / скрытие / пауза ----------
     def hide_manual(self):
         self.force_hidden = True
         self.hide()
@@ -646,7 +612,9 @@ class TranslateWindow(QWidget):
 
     def set_paused_mode(self, paused: bool):
         """Режим паузы: окно текста скрывается, а тулбар остаётся."""
+        self._is_paused = bool(paused)
         self.toolbar.set_pause_active(paused)
+
         if paused:
             self.hide()
             self.toolbar.show()
@@ -658,12 +626,8 @@ class TranslateWindow(QWidget):
             if self.toolbar._is_docked:
                 self.toolbar.align_to_window()
             else:
-                # Если во время паузы тулбар затащили на место окна —
-                # при пробуждении он автоматически "ОТСКАКИВАЕТ" к ближайшей внешней грани!
-                safe_pos = self.toolbar.resolve_collision(self.toolbar.pos())
-                self.toolbar.move(safe_pos)
+                self.toolbar.on_drag_finished()
 
-    # ---------- сквозной клик (Ghost mode) ----------
     def toggle_ghost_mode(self) -> bool:
         self._ghost_mode = not self._ghost_mode
         self.toolbar.set_ghost_active(self._ghost_mode)
@@ -675,10 +639,9 @@ class TranslateWindow(QWidget):
         if eventType == b"windows_generic_MSG" and getattr(self, "_ghost_mode", False) and sys.platform == "win32":
             msg = wintypes.MSG.from_address(int(message))
             if msg.message == 0x0084:  # WM_NCHITTEST
-                return True, -1  # HTTRANSPARENT: клики проходят сквозь окно с текстом
+                return True, -1
         return super().nativeEvent(eventType, message)
 
-    # ---------- drag ----------
     def set_forbidden_rect(self, rect):
         self._forbidden_rect = rect
 
@@ -716,7 +679,6 @@ class TranslateWindow(QWidget):
                     else:
                         return
 
-            # СТРАХОВКА: держим окно перевода внутри монитора(-ов)
             safe_pos = self.clamp_to_screen(new_pos)
             self.move(safe_pos)
             event.accept()
@@ -724,14 +686,13 @@ class TranslateWindow(QWidget):
     def mouseReleaseEvent(self, event):
         self._move_pos = None
 
-    # ---------- контент ----------
     def show_translation(self, text, x=None, y=None):
         if text.startswith("["):
             self._notice_toast.show_notice(text)
             if x is not None and y is not None:
                 raw_pos = QPoint(x + 20 - SHADOW_MARGIN, y + 20 - SHADOW_MARGIN)
                 self.move(self.clamp_to_screen(raw_pos))
-            if not self.isVisible() and not self.force_hidden:
+            if not self.isVisible() and not self.force_hidden and not self._is_paused:
                 self.show()
             return
         cursor = QTextCursor(self.text_widget.document())
@@ -743,9 +704,10 @@ class TranslateWindow(QWidget):
         self.text_widget.ensureCursorVisible()
 
         if x is not None and y is not None:
-            self.move(x + 20 - SHADOW_MARGIN, y + 20 - SHADOW_MARGIN)
+            raw_pos = QPoint(x + 20 - SHADOW_MARGIN, y + 20 - SHADOW_MARGIN)
+            self.move(self.clamp_to_screen(raw_pos))
 
-        if not self.isVisible() and not self.force_hidden:
+        if not self.isVisible() and not self.force_hidden and not self._is_paused:
             self.show()
 
     def clear_history(self):
@@ -765,7 +727,6 @@ class TranslateWindow(QWidget):
         except Exception as _e:
             print(f"[warn] _cleanup_history: {_e}")
 
-    # ---------- статус ----------
     def set_status(self, state, text):
         self._status_reset_timer.stop()
         self.status_pill.set_state(state, text)
