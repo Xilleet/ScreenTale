@@ -46,6 +46,16 @@ TRANSLATOR_HINTS = {
     "nllb": "Локальная модель NLLB-200 (~2.5 ГБ). Работает офлайн, качество выше.",
 }
 
+OCR_ENGINES = [
+    ("windows", "Windows OCR (Быстрый)"),
+    ("easyocr", "EasyOCR (PyTorch)"),
+]
+
+OCR_HINTS = {
+    "windows": "Нативный системный движок Windows 10/11. Молниеносное чтение, 0 МБ VRAM.",
+    "easyocr": "Классический движок на PyTorch.",
+}
+
 # ============================================================
 # Встроенный баннер обновления внизу окна настроек
 # ============================================================
@@ -574,14 +584,32 @@ class SettingsWindow(QWidget):
         self.translator_seg.valueChanged.connect(self._on_translator_changed)
         v.addWidget(card)
 
+# РАЗМЕЩАЕМ МЕЖДУ ПЕРЕВОДОМ И ПРОИЗВОДИТЕЛЬНОСТЬЮ:
+        card_ocr, c_ocr = self._card("Распознавание текста (OCR)")
+        self.ocr_seg = SegmentedControl(OCR_ENGINES)
+        c_ocr.addWidget(self.ocr_seg)
+
+        self.ocr_hint = QLabel()
+        self.ocr_hint.setObjectName("Hint")
+        self.ocr_hint.setWordWrap(True)
+        c_ocr.addWidget(self.ocr_hint)
+
+        self.ocr_pill = StatusPill()
+        c_ocr.addWidget(self.ocr_pill)
+
+        self.ocr_seg.valueChanged.connect(self._on_ocr_changed)
+        v.addWidget(card_ocr)
+
         card2, c2 = self._card("Производительность")
         self.gpu_toggle = ToggleSwitch()
         c2.addWidget(self._option_row(
             "Ускорение на GPU (NVIDIA CUDA)",
             self.gpu_toggle,
             "Переключение перезапускает OCR-движок. Требуется CUDA."))
+        
         self.gpu_pill = StatusPill()
         c2.addWidget(self.gpu_pill)
+
         self.gpu_bar = BusyBar()
         self.gpu_bar.hide()
         c2.addWidget(self.gpu_bar)
@@ -709,6 +737,11 @@ class SettingsWindow(QWidget):
         self._saved_timer.start()
         # TODO(этап 2): контроллер подписан на settings.changed('translator')
         # и в QThread загрузит/выгрузит локальную модель (с прогрессом в gpu_bar).
+
+    def _on_ocr_changed(self, ident):
+        self.ocr_hint.setText(OCR_HINTS.get(ident, ""))
+        self.settings.set("ocr_engine", ident)
+        self._saved_timer.start()
 
     def _on_gpu_toggled(self, checked):
         self.gpu_toggle.setEnabled(False)
@@ -909,6 +942,7 @@ class SettingsWindow(QWidget):
             "GPU: ускорение активно" if is_gpu else "CPU: стандартный режим",
         )
         self._update_cache_display()
+        self._on_setting_changed("ocr_engine", self.settings.get("ocr_engine", "windows"))
 
     def _on_setting_changed(self, key, value):
         if key == "font_size":
@@ -946,6 +980,9 @@ class SettingsWindow(QWidget):
             self.auto_delay_slider.setValue(val)
             self.auto_delay_val.setText(f"{val} мс")
             self.auto_delay_slider.blockSignals(False)
+        elif key == "ocr_engine":
+            self.ocr_seg.set_value(value)
+            self.ocr_hint.setText(OCR_HINTS.get(value, ""))
 
     # ---------------- служебное ----------------
     def resizeEvent(self, e):

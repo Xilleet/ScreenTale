@@ -129,9 +129,10 @@ class AppController(QObject):
             # из-за битых DLL. Дальше OCR/ModelManager тоже упадут — без этого
             # в логе причина вообще не видна.
             print(f"[warn] torch не загрузился в основном потоке: {_e}")
-        self.settings_win.gpu_pill.set_state("busy", "Загрузка OCR-модели…")
-        self.ocr = OcrWorker(bool(self.settings.get("gpu", False)))
-        self.ocr.state_changed.connect(self.settings_win.gpu_pill.set_state)
+        preferred_ocr = self.settings.get("ocr_engine", "windows")
+        self.settings_win.ocr_pill.set_state("busy", "Загрузка OCR-модели…")
+        self.ocr = OcrWorker(bool(self.settings.get("gpu", False)), preferred_engine=preferred_ocr)
+        self.ocr.state_changed.connect(self.settings_win.ocr_pill.set_state)
         self.ocr.cuda_status.connect(self.settings_win.set_gpu_available)
         self.ocr.gpu_result.connect(self._on_gpu_result)
         self.ocr.read_result.connect(self._on_read_result)
@@ -733,6 +734,8 @@ class AppController(QObject):
             else:
                 self.model_manager.unload()
                 self.settings_win.model_finished("off", "Локальная модель не загружена")
+        elif key == "ocr_engine":
+            self.ocr.request_engine(value)
 
     def _on_delete_model(self, engine_id):
         self.model_manager.unload()

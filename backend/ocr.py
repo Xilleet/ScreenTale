@@ -1,20 +1,18 @@
-"""OCR-воркер: EasyOCR в отдельном QThread.
+"""OCR-воркер в отдельном QThread.
 
-Загрузка модели, перезагрузка при смене GPU и чтение текста выполняются
-в одном потоке через очередь задач. UI общается с воркером только сигналами.
+Поддерживает стратегии распознавания (Windows OCR / EasyOCR)
+и выполняет захват и обработку экрана без блокировки интерфейса.
 """
 import ctypes
-import gc
-import os
 import queue
 import re
+import time
 
-import numpy as np
 from PIL import Image, ImageGrab
 from PySide6.QtCore import QThread, Signal
 
-from backend.config import get_data_dir
 from backend.logging_setup import vlog
+from backend.ocr_engines import BaseOcrEngine, EasyOcrEngine, WindowsOcrEngine
 
 
 def get_screen_scale() -> float:
@@ -24,105 +22,132 @@ def get_screen_scale() -> float:
     except Exception:
         return 1.0
 
+def normalize_ocr_text(text: str) -> str:
+    r"""Комплексная очистка и нормализация OCR-текста перед переводом.
 
-def fix_ocr_glitches(text: str) -> str:
-    r"""Правка типовой ошибки распознавания: O→0 в числах.
-
-    Предыдущая версия (v0.4.0) портила нормальный текст — правило
-    `\BI[согласная]` с re.IGNORECASE превращало i внутри слов в l:
-      rapid → rapld, artificial → artlflcial, intelligence → intelllgence,
-      changing → changlng, available → avallable, will → wlll и т.д.
-    Это ломало перевод: NLLB получал мусор и галлюцинировал.
-
-    Правила для I/l удалены — EasyOCR на en-модели nowadays достаточно
-    точен, ручная правка регулярками чаще вредит, чем помогает.
-
-    Оставляем только безопасное правило: O в составе числа → 0.
-    Ловит все позиции: O12, 2O2, 12O, O2OO, 2O2O — все превратятся в 012,
-    202, 120, 0200, 2020. Слова без цифр (Open, Oranges, Hello) не трогает.
+    - Склейка разорванных дефисом слов на стыке строк (infor-\nmation -> information).
+    - Замена одиночных \n на пробелы (сохраняет контекст для Opus-MT).
+    - Нормализация кавычек, апострофов и тире к стандартным ASCII-символам.
+    - Исправление типовой ошибки OCR O->0 в числах.
     """
-    if not text:
-        return text
-    # Последовательность из [O или цифра] с хотя бы одной цифрой — это
-    # число с возможными OCR-ошибками O вместо 0. Заменяем все O на 0.
+    if not text or not text.strip():
+        return ""
+
+    # 1. Склейка слов, разорванных переносом строки: "trans-\nlation" -> "translation"
+    text = re.sub(r"(\w+)-\s*\n\s*(\w+)", r"\1\2", text)
+
+    # 2. Одиночные \r\n или \n заменяем на пробел, сохраняя двойные \n\n (абзацы)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+
+    # 3. Нормализация кавычек и апострофов к стандарту
+    quote_map = {
+        "“": '"', "”": '"', "„": '"', "«": '"', "»": '"',
+        "’": "'", "‘": "'", "`": "'", "‚": "'", "‛": "'",
+    }
+    for bad, good in quote_map.items():
+        text = text.replace(bad, good)
+
+    # 4. Нормализация тире и дублирующихся дефисов
+    text = re.sub(r"[—–]", " - ", text)
+    text = re.sub(r"-{2,}", " - ", text)
+
+    # 5. Правка типовой ошибки OCR: буква O вместо 0 в числах (2O24 -> 2024)
     def _replace_o(match):
         return match.group(0).replace("O", "0")
-    return re.sub(r"\b[O\d]*\d[O\d]*\b", _replace_o, text)
+
+    text = re.sub(r"\b[O\d]*\d[O\d]*\b", _replace_o, text)
+
+    # 6. Схлопывание лишних пробелов внутри строк
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
 
 def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
-    """Адаптивное увеличение картинки фильтром Ланцоша для четкости мелких шрифтов."""
-    if img.height <= 120:
-        scale = 2.5
-    elif img.height <= 300:
+    """Адаптивное увеличение картинки фильтром Ланцоша для четкости мелких шрифтов.
+
+    Также защищает от ограничения WinRT API (минимальный размер кадра 40x40).
+    """
+    w, h = img.size
+    # 1. Защита от минимального размера Windows OCR (WinRT требует минимум 40x40 px)
+    if w < 40 or h < 40:
+        scale_min = max(40 / max(w, 1), 40 / max(h, 1)) * 1.2
+        new_size = (int(w * scale_min), int(h * scale_min))
+        return img.resize(new_size, Image.Resampling.LANCZOS)
+
+    # 2. Адаптивный апскейл для мелких шрифтов
+    if h <= 120:
         scale = 2.0
-    elif img.height <= 500:
+    elif h <= 250:
         scale = 1.5
     else:
         return img
 
-    new_size = (int(img.width * scale), int(img.height * scale))
+    new_size = (int(w * scale), int(h * scale))
     return img.resize(new_size, Image.Resampling.LANCZOS)
+
 
 class OcrWorker(QThread):
     # статус для StatusPill: (state, text); state: ok/busy/off/error
     state_changed = Signal(str, str)
-    # доступность CUDA (проверяется в фоновом потоке после импорта torch)
+    # доступность CUDA
     cuda_status = Signal(bool)
-    # результат чтения: (bbox, текст)
-    # было:  read_result = Signal(tuple, str)
-    read_result = Signal(tuple, str, str)   # bbox, текст, контекст ("single"/"auto")
+    # результат чтения: (bbox, текст, контекст)
+    read_result = Signal(tuple, str, str)
     # итог переключения GPU: (success, фактически_работает_на_gpu, сообщение)
     gpu_result = Signal(bool, bool, str)
+    # событие смены активного движка
+    engine_changed = Signal(str)
 
-    def __init__(self, use_gpu: bool):
+    def __init__(self, use_gpu: bool = False, preferred_engine: str = "windows"):
         super().__init__()
         self._requested_gpu = bool(use_gpu)
-        self._active_gpu = False
-        self._reader = None
-        self._easyocr = None
-        self._torch = None
-        self._tasks = queue.Queue()
+        self._preferred_engine = preferred_engine
+        self._active_engine_name = "windows"
+        self._engine: BaseOcrEngine | None = None
+        self._tasks: queue.Queue = queue.Queue()
         self._stop_flag = False
 
-    # ---------- публичный API (безопасно звать из любого потока) ----------
-    def read(self, bbox, context="single"):
+    # ---------- публичный API (потокобезопасно) ----------
+    def read(self, bbox: tuple, context: str = "single") -> None:
         self._tasks.put(("read", bbox, context))
 
-    def request_gpu(self, use_gpu: bool):
-        """Переключить OCR на GPU/CPU (перезагрузка модели)."""
+    def request_gpu(self, use_gpu: bool) -> None:
+        """Переключить режим GPU (актуально для EasyOCR)."""
         self._tasks.put(("set_gpu", bool(use_gpu)))
 
-    def stop(self):
-        """Остановить поток. Блокируется максимум на ~3 c."""
+    def request_engine(self, engine_name: str) -> None:
+        """Сменить OCR-движок на лету ('windows' или 'easyocr')."""
+        self._tasks.put(("set_engine", str(engine_name)))
+
+    def stop(self) -> None:
+        """Остановить поток воркера."""
         self._stop_flag = True
         self._tasks.put(("stop",))
         if not self.wait(3000):
             self.terminate()
             self.wait(1000)
 
-    # ---------- внутренности (выполняются в потоке воркера) ----------
-    def run(self):
-        # Тяжёлые библиотеки импортируем здесь, чтобы не тормозить старт GUI
+    # ---------- внутренности (поток воркера) ----------
+    def run(self) -> None:
+        # Проверяем доступность CUDA для настроек
+        cuda_available = False
         try:
-            import easyocr
             import torch
-            self._easyocr = easyocr
-            self._torch = torch
-        except Exception as e:
-            self.state_changed.emit("error", f"OCR-библиотеки недоступны: {e}")
-            self.cuda_status.emit(False)
 
-        cuda_available = bool(self._torch and self._torch.cuda.is_available())
+            cuda_available = bool(torch.cuda.is_available())
+        except Exception:
+            pass
         self.cuda_status.emit(cuda_available)
 
-        if self._easyocr is not None:
-            self._load_model(self._requested_gpu and cuda_available)
+        # Выбираем и загружаем начальный движок
+        self._init_engine(self._preferred_engine, self._requested_gpu)
 
         while not self._stop_flag:
             try:
                 task = self._tasks.get(timeout=0.3)
             except queue.Empty:
                 continue
+
             kind = task[0]
             if kind == "stop":
                 break
@@ -130,84 +155,105 @@ class OcrWorker(QThread):
                 self._do_read(task[1], task[2])
             elif kind == "set_gpu":
                 self._do_set_gpu(task[1])
+            elif kind == "set_engine":
+                self._init_engine(task[1], self._requested_gpu)
 
-    def _drop_reader(self):
-        if self._reader is not None:
-            self._reader = None
-            gc.collect()
-            if self._torch is not None and self._torch.cuda.is_available():
-                self._torch.cuda.empty_cache()
+        if self._engine is not None:
+            self._engine.unload()
 
-    def _load_model(self, use_gpu: bool):
-        self.state_changed.emit("busy", "Загрузка OCR-модели…")
-        try:
-            self._drop_reader()
-            # Модели EasyOCR — портативно, рядом с приложением
-            # (по умолчанию EasyOCR пишет в C:\Users\<юзер>\.EasyOCR)
-            mdir = os.path.join(get_data_dir(), "easyocr_models")
-            os.makedirs(mdir, exist_ok=True)
-            self._reader = self._easyocr.Reader(["en"], gpu=use_gpu,
-                                                model_storage_directory=mdir)
-            self._active_gpu = use_gpu
-            self.state_changed.emit(
-                "ok" if use_gpu else "off",
-                "GPU: ускорение активно" if use_gpu else "CPU: стандартный режим")
-            self.gpu_result.emit(True, use_gpu, "")
-        except Exception as e:
-            self.state_changed.emit("error", f"Ошибка загрузки OCR: {e}")
-            self.gpu_result.emit(False, False, str(e))
+    def _init_engine(self, engine_name: str, use_gpu: bool) -> None:
+        """Инициализация стратегии распознавания."""
+        self.state_changed.emit("busy", f"Загрузка {engine_name} OCR…")
+        if self._engine is not None:
+            self._engine.unload()
 
-    def _do_set_gpu(self, use_gpu: bool):
-        # уже в этом режиме — тихо игнорируем (защита от повторных триггеров)
-        if self._reader is not None and use_gpu == self._active_gpu:
-            return
-        cuda_available = bool(self._torch and self._torch.cuda.is_available())
-        if use_gpu and not cuda_available:
-            self.gpu_result.emit(False, False, "CUDA недоступна")
-            return
+        # 1. Пробуем нативный Windows OCR
+        if engine_name == "windows":
+            win_engine = WindowsOcrEngine(default_lang="en")
+            if win_engine.is_available():
+                win_engine.load()
+                self._engine = win_engine
+                self._active_engine_name = "windows"
+                self.state_changed.emit("ok", "Windows OCR: активен")
+                self.gpu_result.emit(True, False, "Windows OCR работает нативно в ОС")
+                self.engine_changed.emit("windows")
+                print("[ocr] Windows OCR успешно инициализирован")
+                return
+            print("[ocr] Windows OCR недоступен, откат на EasyOCR")
+            engine_name = "easyocr"
 
-        self.state_changed.emit("busy", "Переключение режима OCR…")
-        try:
-            self._drop_reader()
-            self._reader = self._easyocr.Reader(["en"], gpu=use_gpu)
-            self._active_gpu = use_gpu
-            self.state_changed.emit(
-                "ok" if use_gpu else "off",
-                "GPU: ускорение активно" if use_gpu else "CPU: стандартный режим")
-            self.gpu_result.emit(True, use_gpu, "")
-        except Exception as e:
-            # откат на CPU, чтобы OCR не умер совсем
+        # 2. Запасной EasyOCR
+        easy_engine = EasyOcrEngine()
+        if easy_engine.is_available():
             try:
-                self._reader = self._easyocr.Reader(["en"], gpu=False)
-                self._active_gpu = False
-                self.state_changed.emit("off", "CPU: стандартный режим (после ошибки GPU)")
+                easy_engine.load(use_gpu=use_gpu, lang="en")
+                self._engine = easy_engine
+                self._active_engine_name = "easyocr"
+                self.state_changed.emit(
+                    "ok" if use_gpu else "off",
+                    "EasyOCR: GPU ускорение" if use_gpu else "EasyOCR: CPU режим",
+                )
+                self.gpu_result.emit(True, use_gpu, "")
+                self.engine_changed.emit("easyocr")
+                print(f"[ocr] EasyOCR загружен (gpu={use_gpu})")
+                return
+            except Exception as e:
+                self.state_changed.emit("error", f"Ошибка EasyOCR: {e}")
                 self.gpu_result.emit(False, False, str(e))
-            except Exception as e2:
-                self.state_changed.emit("error", f"Ошибка OCR: {e2}")
-                self.gpu_result.emit(False, False, str(e2))
+                return
 
-    def _do_read(self, bbox, context):
-        if self._reader is None:
-            self.read_result.emit(bbox, "[OCR-модель ещё не готова, попробуйте через несколько секунд]", context)
+        self.state_changed.emit("error", "Нет доступных OCR-движков")
+
+    def _do_set_gpu(self, use_gpu: bool) -> None:
+        self._requested_gpu = use_gpu
+        if self._active_engine_name == "easyocr" and self._engine is not None:
+            self._init_engine("easyocr", use_gpu)
+        else:
+            # Для Windows OCR GPU не требуется
+            self.gpu_result.emit(True, False, "Windows OCR использует нативные API Windows")
+
+    def _do_read(self, bbox: tuple, context: str) -> None:
+        if self._engine is None:
+            self.read_result.emit(
+                bbox, "[OCR-модель ещё не готова, подождите несколько секунд]", context
+            )
             return
+
         try:
             left, top, right, bottom = bbox
             scale = get_screen_scale()
-            physical = (int(left * scale), int(top * scale),
-                        int(right * scale), int(bottom * scale))
-            
-            # 1. Захватываем область
+            physical = (
+                int(left * scale),
+                int(top * scale),
+                int(right * scale),
+                int(bottom * scale),
+            )
+
+            # 1. Захват экрана
             img = ImageGrab.grab(bbox=physical)
-            
-            # 2. Апскейлим картинку (для твоих 1307x184 увеличит в 2 раза)
+
+            # 2. Адаптивная подготовка размера кадра
             img = _preprocess_for_ocr(img)
 
-            # 3. Отдаем в EasyOCR уже четкую увеличенную картинку
-            results = self._reader.readtext(np.array(img), detail=0, paragraph=True)
-            text = fix_ocr_glitches(" ".join(results))
-            
-            print(f"[ocr] прочитано: {text[:60]!r} (ctx={context})")
-            vlog(f"[ocr] прочитано (full): {text!r} (ctx={context})")
-            self.read_result.emit(bbox, text if text.strip() else "[Текст не найден]", context)
+            # 3. Замер реальной скорости распознавания
+            t_start = time.perf_counter()
+            raw_text = self._engine.read(img)
+            latency_ms = (time.perf_counter() - t_start) * 1000
+
+            text = normalize_ocr_text(raw_text)
+
+            print(
+                f"[ocr:{self._active_engine_name}] {latency_ms:.1f} ms | "
+                f"{text[:60]!r} (ctx={context})"
+            )
+            vlog(
+                f"[ocr:{self._active_engine_name}] (full) {latency_ms:.1f} ms | "
+                f"{text!r} (ctx={context})"
+            )
+
+            result_text = text if text.strip() else "[Текст не найден]"
+            self.read_result.emit(bbox, result_text, context)
+
         except Exception as e:
+            print(f"[ocr] ошибка чтения: {e}")
             self.read_result.emit(bbox, f"[Ошибка OCR: {e}]", context)

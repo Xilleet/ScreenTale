@@ -6,7 +6,7 @@ import sys
 
 from PySide6.QtCore import QObject, Signal
 
-APP_VERSION = "0.4.5"
+APP_VERSION = "0.5.0-beta"
 
 
 def get_app_dir() -> str:
@@ -31,6 +31,7 @@ DEFAULTS = {
     "font_size": 14,
     "theme": "dark",     
     "opacity": 0.95,
+    "ocr_engine": "windows",  # windows | easyocr
     "translator": "google",   # google | mymemory | opus | nllb
     "gpu": False,
     "auto_copy": True,
@@ -123,7 +124,7 @@ class SettingsManager(QObject):
             return
 
         for key in ("theme", "font_size", "opacity", "gpu", "auto_copy",
-                    "auto_delay_ms", "verbose_log"):
+                    "auto_delay_ms", "verbose_log", "ocr_engine"):
             if key in data:
                 self._values[key] = data[key]
 
