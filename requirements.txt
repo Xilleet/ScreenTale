@@ -10,3 +10,4 @@ pyside6_essentials==6.11.2
 torch==2.12.1
 tqdm==4.70.1
 transformers==5.17.0
+winocr==0.0.15
