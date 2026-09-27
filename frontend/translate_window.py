@@ -233,11 +233,24 @@ class FloatingToolbar(QFrame):
         w = self.width()
         h = self.height()
 
-        if anchor == "top_left":
+        screen = QApplication.primaryScreen()
+        v_top = screen.virtualGeometry().top() if screen else 0
+        v_bottom = screen.virtualGeometry().bottom() if screen else 9999
+
+        # Умный авто-флип: если окно уперлось в край экрана — перепрыгиваем на противоположную грань
+        effective_anchor = anchor
+        if "top" in anchor and (card.top() - h - TOOLBAR_GAP < v_top):
+            # Сверху экрана места нет — автоматически отскакиваем вниз:
+            effective_anchor = anchor.replace("top", "bottom")
+        elif "bottom" in anchor and (card.bottom() + h + TOOLBAR_GAP > v_bottom):
+            # Снизу экрана места нет — автоматически отскакиваем наверх:
+            effective_anchor = anchor.replace("bottom", "top")
+
+        if effective_anchor == "top_left":
             raw = QPoint(card.left(), card.top() - h - TOOLBAR_GAP)
-        elif anchor == "bottom_left":
+        elif effective_anchor == "bottom_left":
             raw = QPoint(card.left(), card.bottom() + TOOLBAR_GAP)
-        elif anchor == "bottom_right":
+        elif effective_anchor == "bottom_right":
             raw = QPoint(card.right() - w + 1, card.bottom() + TOOLBAR_GAP)
         else:  # top_right
             raw = QPoint(card.right() - w + 1, card.top() - h - TOOLBAR_GAP)
