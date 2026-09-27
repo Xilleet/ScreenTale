@@ -655,32 +655,47 @@ class TranslateWindow(QWidget):
 
     def mouseMoveEvent(self, event):
         if self._move_pos and (event.buttons() & Qt.MouseButton.LeftButton):
-            new_pos = event.globalPosition().toPoint() - self._move_pos
+            raw_pos = event.globalPosition().toPoint() - self._move_pos
+
             if self._forbidden_rect is not None:
-                new_x, new_y = new_pos.x(), new_pos.y()
-                new_rect = QRect(new_x, new_y, self.width(), self.height())
-                if new_rect.intersects(self._forbidden_rect):
-                    fr = self._forbidden_rect
-                    shift_left = fr.left() - self.width() - 1
-                    shift_right = fr.right() + 1
-                    shift_top = fr.top() - self.height() - 1
-                    shift_bottom = fr.bottom() + 1
-                    cands = [
-                        (shift_left, new_y, abs(new_x - shift_left)),
-                        (shift_right, new_y, abs(new_x - shift_right)),
-                        (new_x, shift_top, abs(new_y - shift_top)),
-                        (new_x, shift_bottom, abs(new_y - shift_bottom)),
+                fr = self._forbidden_rect
+                w = self.width()
+                h = self.height()
+                test_rect = QRect(raw_pos.x(), raw_pos.y(), w, h)
+
+                # Если окно наползает на рамку OCR:
+                if test_rect.intersects(fr):
+                    # 4 варианта выталкивания (влево, вправо, вверх, вниз):
+                    candidates = [
+                        QPoint(fr.left() - w - 2, raw_pos.y()),   # слева
+                        QPoint(fr.right() + 2, raw_pos.y()),      # справа
+                        QPoint(raw_pos.x(), fr.top() - h - 2),    # сверху
+                        QPoint(raw_pos.x(), fr.bottom() + 2),     # снизу
                     ]
-                    valid_cands = [c for c in cands if not QRect(c[0], c[1], self.width(), self.height()).intersects(self._forbidden_rect)]
-                    if valid_cands:
-                        best_x, best_y, _ = min(valid_cands, key=lambda c: c[2])
-                        new_pos.setX(best_x)
-                        new_pos.setY(best_y)
+
+                    # Оставляем ТОЛЬКО тех кандидатов, которые после удержания на экране НЕ пересекают bbox:
+                    valid_positions = []
+                    for cand in candidates:
+                        clamped = self.clamp_to_screen(cand)
+                        cand_rect = QRect(clamped.x(), clamped.y(), w, h)
+                        if not cand_rect.intersects(fr):
+                            dist = (raw_pos - clamped).manhattanLength()
+                            valid_positions.append((clamped, dist))
+
+                    # Выбираем позицию, ближайшую к мыши:
+                    if valid_positions:
+                        best_pos, _ = min(valid_positions, key=lambda p: p[1])
+                        self.move(best_pos)
+                        event.accept()
+                        return
                     else:
+                        # Если ни с одной стороны места нет (рамка на весь экран) — просто держим на экране
+                        self.move(self.clamp_to_screen(raw_pos))
+                        event.accept()
                         return
 
-            safe_pos = self.clamp_to_screen(new_pos)
-            self.move(safe_pos)
+            # Если пересечений с bbox нет — просто удерживаем в границах экрана
+            self.move(self.clamp_to_screen(raw_pos))
             event.accept()
 
     def mouseReleaseEvent(self, event):
