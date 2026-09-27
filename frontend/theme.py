@@ -180,7 +180,47 @@ QFrame#SettingsContainer {
     border: 1px solid @stroke;
     border-radius: 12px;
 }
-
+QMenu {
+    background-color: @bg_card;
+    border: 1px solid @stroke;
+    border-radius: 9px;
+    padding: 4px;
+}
+QMenu::item {
+    background: transparent;
+    color: @text;
+    padding: 6px 16px 6px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    margin: 1px 2px;
+}
+QMenu::item:hover, QMenu::item:selected {
+    background-color: @bg_hover;
+    color: @text;
+}
+QMenu::item:disabled {
+    color: @accent;
+    font-weight: 600;
+}
+QMenu::separator {
+    height: 1px;
+    background-color: @stroke;
+    margin: 4px 6px;
+}
+QWidget#TrayHeader {
+    background: transparent;
+}
+QLabel#TrayTitle {
+    font-weight: 600;
+    font-size: 13px;
+    color: @accent;
+    background: transparent;
+}
+QLabel#TrayVersion {
+    font-size: 11px;
+    color: @text_dim;
+    background: transparent;
+}
 QFrame#UpdateBanner {
     background-color: @bg_card;
     border: 1px solid @accent;

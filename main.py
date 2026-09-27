@@ -10,7 +10,7 @@ import traceback
 from difflib import SequenceMatcher
 
 # --- Логирование ДО ВСЕХ тяжёлых импортов ---
-from backend.config import get_app_dir, get_data_dir
+from backend.config import APP_VERSION, get_app_dir, get_data_dir
 from backend.logging_setup import set_verbose, setup_logging, vlog
 
 setup_logging(get_data_dir())
@@ -28,7 +28,17 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QMessageBox,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+    QWidgetAction,
+)
 
 from backend.auto_mode import AutoModeWorker
 from backend.config import SettingsManager
@@ -673,11 +683,68 @@ class AppController(QObject):
         self.tray.setToolTip("ScreenTale")
 
         menu = QMenu()
+        menu.setWindowFlags(menu.windowFlags() | Qt.WindowType.FramelessWindowHint)
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        # 1. Шапка меню: Слева название+версия, Справа логотип (28x28)
+        header_widget = QWidget()
+        header_widget.setObjectName("TrayHeader")
+        h_lay = QHBoxLayout(header_widget)
+        h_lay.setContentsMargins(10, 6, 10, 6)
+        h_lay.setSpacing(10)
+
+        # Текст (Название + Версия)
+        text_box = QVBoxLayout()
+        text_box.setContentsMargins(0, 0, 0, 0)
+        text_box.setSpacing(1)
+
+        lbl_title = QLabel("ScreenTale")
+        lbl_title.setObjectName("TrayTitle")
+        lbl_ver = QLabel(f"версия {APP_VERSION}")
+        lbl_ver.setObjectName("TrayVersion")
+
+        text_box.addWidget(lbl_title)
+        text_box.addWidget(lbl_ver)
+        h_lay.addLayout(text_box, 1)
+
+        # Логотип справа
+        logo_path = os.path.join(get_app_dir(), "logo.png")
+        if not os.path.exists(logo_path) and hasattr(sys, "_MEIPASS"):
+            logo_path = os.path.join(sys._MEIPASS, "logo.png")
+
+        if os.path.exists(logo_path):
+            lbl_logo = QLabel()
+            lbl_logo.setStyleSheet("background: transparent;")
+            pix = QPixmap(logo_path).scaled(
+                28, 28,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            lbl_logo.setPixmap(pix)
+            h_lay.addWidget(lbl_logo, 0, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+
+        act_header = QWidgetAction(menu)
+        act_header.setDefaultWidget(header_widget)
+        menu.addAction(act_header)
+
+        menu.addSeparator()
+
+        # 2. Основные действия
         act_settings = menu.addAction("Настройки")
         act_settings.triggered.connect(self.show_settings)
-        act_toggle = menu.addAction("Показать/скрыть окно перевода")
+
+        act_toggle = menu.addAction("Окно перевода\tCtrl + `")
         act_toggle.triggered.connect(self.trans_win.toggle_visible)
+
+        act_single = menu.addAction("Выделить область\tAlt + Q")
+        act_single.triggered.connect(self._start_selection)
+
+        act_auto = menu.addAction("Авто-режим\tAlt + W")
+        act_auto.triggered.connect(self._toggle_auto_mode)
+
         menu.addSeparator()
+
+        # 3. Выход
         act_exit = menu.addAction("Выход")
         act_exit.triggered.connect(self.exit_app)
 
