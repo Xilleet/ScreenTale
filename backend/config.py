@@ -6,7 +6,7 @@ import sys
 
 from PySide6.QtCore import QObject, Signal
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 
 
 def get_app_dir() -> str:
