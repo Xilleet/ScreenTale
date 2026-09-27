@@ -12,7 +12,12 @@ from PIL import Image, ImageGrab
 from PySide6.QtCore import QThread, Signal
 
 from backend.logging_setup import vlog
-from backend.ocr_engines import BaseOcrEngine, EasyOcrEngine, WindowsOcrEngine
+from backend.ocr_engines import (
+    BaseOcrEngine,
+    EasyOcrEngine,
+    RapidOcrEngine,
+    WindowsOcrEngine,
+)
 
 
 def get_screen_scale() -> float:
@@ -98,10 +103,16 @@ class OcrWorker(QThread):
     # событие смены активного движка
     engine_changed = Signal(str)
 
-    def __init__(self, use_gpu: bool = False, preferred_engine: str = "windows"):
+    def __init__(
+        self,
+        use_gpu: bool = False,
+        preferred_engine: str = "windows",
+        preferred_direction: str = "horizontal",
+    ):
         super().__init__()
         self._requested_gpu = bool(use_gpu)
         self._preferred_engine = preferred_engine
+        self._preferred_direction = preferred_direction
         self._active_engine_name = "windows"
         self._engine: BaseOcrEngine | None = None
         self._tasks: queue.Queue = queue.Queue()
@@ -157,9 +168,17 @@ class OcrWorker(QThread):
                 self._do_set_gpu(task[1])
             elif kind == "set_engine":
                 self._init_engine(task[1], self._requested_gpu)
+            elif kind == "set_direction":
+                self._do_set_direction(task[1])
 
         if self._engine is not None:
             self._engine.unload()
+
+    def _do_set_direction(self, direction: str) -> None:
+        self._preferred_direction = direction
+        if hasattr(self._engine, "set_direction"):
+            self._engine.set_direction(direction)
+        print(f"[ocr] Направление текста переключено на: {direction}")
 
     def _init_engine(self, engine_name: str, use_gpu: bool) -> None:
         """Инициализация стратегии распознавания."""
@@ -167,7 +186,7 @@ class OcrWorker(QThread):
         if self._engine is not None:
             self._engine.unload()
 
-        # 1. Пробуем нативный Windows OCR
+        # 1. Нативный Windows OCR
         if engine_name == "windows":
             win_engine = WindowsOcrEngine(default_lang="en")
             if win_engine.is_available():
@@ -179,10 +198,25 @@ class OcrWorker(QThread):
                 self.engine_changed.emit("windows")
                 print("[ocr] Windows OCR успешно инициализирован")
                 return
-            print("[ocr] Windows OCR недоступен, откат на EasyOCR")
+            print("[ocr] Windows OCR недоступен, откат на RapidOCR")
+            engine_name = "rapidocr"
+
+        # 2. Легковесный RapidOCR (ONNX / Азия / Tategaki)
+        if engine_name == "rapidocr":
+            rapid_engine = RapidOcrEngine(direction=self._preferred_direction)
+            if rapid_engine.is_available():
+                rapid_engine.load()
+                self._engine = rapid_engine
+                self._active_engine_name = "rapidocr"
+                self.state_changed.emit("ok", "RapidOCR: активен (ONNX)")
+                self.gpu_result.emit(True, False, "RapidOCR работает на ONNX Runtime")
+                self.engine_changed.emit("rapidocr")
+                print("[ocr] RapidOCR успешно инициализирован")
+                return
+            print("[ocr] RapidOCR недоступен, откат на EasyOCR")
             engine_name = "easyocr"
 
-        # 2. Запасной EasyOCR
+        # 3. Запасной EasyOCR
         easy_engine = EasyOcrEngine()
         if easy_engine.is_available():
             try:
@@ -257,3 +291,7 @@ class OcrWorker(QThread):
         except Exception as e:
             print(f"[ocr] ошибка чтения: {e}")
             self.read_result.emit(bbox, f"[Ошибка OCR: {e}]", context)
+
+    def request_direction(self, direction: str) -> None:
+            """Сменить направление текста ('horizontal' или 'vertical')."""
+            self._tasks.put(("set_direction", str(direction)))

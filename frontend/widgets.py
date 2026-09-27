@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -77,11 +78,11 @@ class ToggleSwitch(QAbstractButton):
 class SegmentedControl(QFrame):
     valueChanged = Signal(str)
 
-    def __init__(self, items, parent=None):
-        # items: [(id, title), ...]
+    def __init__(self, items, parent=None, vertical: bool = False):
         super().__init__(parent)
         self.setObjectName("Segmented")
-        lay = QHBoxLayout(self)
+        # Если vertical=True — ставим вертикальный лейаут QVBoxLayout:
+        lay = QVBoxLayout(self) if vertical else QHBoxLayout(self)
         lay.setContentsMargins(3, 3, 3, 3)
         lay.setSpacing(2)
         self._buttons = {}

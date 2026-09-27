@@ -31,8 +31,9 @@ DEFAULTS = {
     "font_size": 14,
     "theme": "dark",     
     "opacity": 0.95,
-    "ocr_engine": "windows",  # windows | easyocr
-    "translator": "google",   # google | mymemory | opus | nllb
+    "ocr_engine": "windows",    # windows | rapidocr | easyocr
+    "ocr_direction": "horizontal",  # horizontal | vertical (Tategaki)
+    "translator": "google",     # google | mymemory | opus | nllb
     "gpu": False,
     "auto_copy": True,
     "auto_delay_ms": 800,
@@ -125,7 +126,7 @@ class SettingsManager(QObject):
             return
 
         for key in ("theme", "font_size", "opacity", "gpu", "auto_copy",
-                    "auto_delay_ms", "verbose_log", "ocr_engine"):
+                    "auto_delay_ms", "verbose_log", "ocr_engine", "ocr_direction", "welcome_completed"):
             if key in data:
                 self._values[key] = data[key]
 

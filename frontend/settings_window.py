@@ -48,14 +48,21 @@ TRANSLATOR_HINTS = {
 }
 
 OCR_ENGINES = [
-    ("windows", "Windows OCR (Быстрый)"),
+    ("windows", "Windows OCR"),
     ("easyocr", "EasyOCR (PyTorch)"),
+    ("rapidocr", "RapidOCR"),
 ]
 
 OCR_HINTS = {
-    "windows": "Нативный системный движок Windows 10/11. Молниеносное чтение, 0 МБ VRAM.",
-    "easyocr": "Классический движок на PyTorch.",
+    "windows": "Нативный системный движок Windows 10/11. Молниеносное чтение (~15 мс), 0 МБ VRAM.",
+    "easyocr": "Классический движок на PyTorch. Задержка ~500 мс.",
+    "rapidocr": "Легковесный ONNX-движок. Высокая точность на сложных стилизованных шрифтах, иероглифах и манге.",
 }
+
+OCR_DIRECTIONS = [
+    ("horizontal", "→  Горизонтальный"),
+    ("vertical", "↓  Вертикальный (Tategaki)"),
+]
 
 # ============================================================
 # Встроенный баннер обновления внизу окна настроек
@@ -627,10 +634,22 @@ class SettingsWindow(QWidget):
         self.ocr_hint.setWordWrap(True)
         c_ocr.addWidget(self.ocr_hint)
 
+        # Выбор направления текста (Tategaki для манги и новелл)
+        # Сохраняем строку направления в переменную self.dir_row:
+        self.dir_seg = SegmentedControl(OCR_DIRECTIONS, vertical=True)
+        self.dir_seg.setMinimumWidth(210)
+        self.dir_row = self._option_row(
+            "Направление текста",
+            self.dir_seg,
+            "Режим Tategaki (сверху-вниз, справа-налево) для японских новелл и манги."
+        )
+        c_ocr.addWidget(self.dir_row)
+
         self.ocr_pill = StatusPill()
         c_ocr.addWidget(self.ocr_pill)
 
         self.ocr_seg.valueChanged.connect(self._on_ocr_changed)
+        self.dir_seg.valueChanged.connect(self._on_dir_changed)
         v.addWidget(card_ocr)
 
         card2, c2 = self._card("Производительность")
@@ -774,6 +793,12 @@ class SettingsWindow(QWidget):
     def _on_ocr_changed(self, ident):
         self.ocr_hint.setText(OCR_HINTS.get(ident, ""))
         self.settings.set("ocr_engine", ident)
+        # Показываем Tategaki только для RapidOCR:
+        self.dir_row.setVisible(ident == "rapidocr")
+        self._saved_timer.start()
+
+    def _on_dir_changed(self, ident):
+        self.settings.set("ocr_direction", ident)
         self._saved_timer.start()
 
     def _on_gpu_toggled(self, checked):
@@ -976,6 +1001,10 @@ class SettingsWindow(QWidget):
         )
         self._update_cache_display()
         self._on_setting_changed("ocr_engine", self.settings.get("ocr_engine", "windows"))
+        self._on_setting_changed("ocr_direction", self.settings.get("ocr_direction", "horizontal"))
+        current_ocr = self.settings.get("ocr_engine", "windows")
+        self._on_setting_changed("ocr_engine", current_ocr)
+        self.dir_row.setVisible(current_ocr == "rapidocr")
 
     def _on_setting_changed(self, key, value):
         if key == "font_size":
@@ -1016,6 +1045,9 @@ class SettingsWindow(QWidget):
         elif key == "ocr_engine":
             self.ocr_seg.set_value(value)
             self.ocr_hint.setText(OCR_HINTS.get(value, ""))
+            self.dir_row.setVisible(value == "rapidocr")
+        elif key == "ocr_direction":
+            self.dir_seg.set_value(value)
 
     # ---------------- служебное ----------------
     def resizeEvent(self, e):

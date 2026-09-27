@@ -15,6 +15,7 @@ ruff.toml
 README.md.back
 update_reqs.bat
 build.bat
+roadmap.txt
 
 # Логи и блокировки
 app.log

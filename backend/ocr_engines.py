@@ -22,6 +22,14 @@ except ImportError:
     winocr = None
     HAS_WINOCR = False
 
+# Проверка импорта rapidocr
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    HAS_RAPIDOCR = True
+except ImportError:
+    RapidOCR = None
+    HAS_RAPIDOCR = False
+
 # winocr уже содержит импортированные OcrEngine и Language из WinRT
 WinrtOcrEngine = getattr(winocr, "OcrEngine", None)
 Language = getattr(winocr, "Language", None)
@@ -192,3 +200,109 @@ class EasyOcrEngine(BaseOcrEngine):
             gc.collect()
             if self._torch is not None and self._torch.cuda.is_available():
                 self._torch.cuda.empty_cache()
+
+# =====================================================================
+# 3. RapidOCR Engine (ONNX Runtime / Азия / Tategaki)
+# =====================================================================
+class RapidOcrEngine(BaseOcrEngine):
+    """Легковесный C++ OCR на ONNX Runtime для стилизованных шрифтов, иероглифов и манги."""
+
+    engine_id: str = "rapidocr"
+    display_name: str = "RapidOCR (ONNX / Азия)"
+
+    def __init__(self, direction: str = "horizontal"):
+        self.direction = direction
+        self._engine = None
+
+    def is_available(self) -> bool:
+        return HAS_RAPIDOCR
+
+    def load(self, use_gpu: bool = False, lang: str = "en") -> bool:
+        if not HAS_RAPIDOCR or RapidOCR is None:
+            return False
+        try:
+            # Инициализация легковесного ONNX-рантайма
+            self._engine = RapidOCR()
+            return True
+        except Exception as e:
+            vlog(f"[rapidocr] сбой загрузки: {e}")
+            return False
+
+    def set_direction(self, direction: str) -> None:
+        """Направление чтения: 'horizontal' (горизонтальное) или 'vertical' (Tategaki)."""
+        self.direction = direction
+
+    def read(self, img: Image.Image, direction: str | None = None) -> str:
+        if self._engine is None:
+            return ""
+
+        dir_mode = direction or self.direction
+        img_np = np.array(img.convert("RGB"))
+
+        try:
+            result, _ = self._engine(img_np)
+            if not result:
+                return ""
+
+            # Режим Tategaki: сортировка японских столбцов СПРАВА НАЛЕВО, СВЕРХУ ВНИЗ
+            if dir_mode == "vertical":
+                return self._sort_tategaki(result)
+
+            # Стандартный горизонтальный режим
+            lines = [item[1] for item in result if item and len(item) > 1]
+            return " ".join(lines).strip()
+        except Exception as e:
+            vlog(f"[rapidocr] сбой распознавания: {e}")
+            return ""
+
+    def _sort_tategaki(self, result: list) -> str:
+        """Геометрическая группировка столбцов для манги: справа налево, сверху вниз."""
+        boxes_with_text = []
+        for item in result:
+            if not item or len(item) < 2:
+                continue
+            box, text = item[0], item[1]
+            xs = [p[0] for p in box]
+            ys = [p[1] for p in box]
+            center_x = sum(xs) / len(xs)
+            center_y = sum(ys) / len(ys)
+            width = max(xs) - min(xs)
+            boxes_with_text.append({
+                "text": text,
+                "cx": center_x,
+                "cy": center_y,
+                "w": width,
+            })
+
+        if not boxes_with_text:
+            return ""
+
+        # 1. Сортируем блоки справа налево (-cx)
+        boxes_with_text.sort(key=lambda b: -b["cx"])
+
+        # 2. Группируем блоки в вертикальные столбцы
+        columns: list[list[dict]] = []
+        for b in boxes_with_text:
+            placed = False
+            for col in columns:
+                col_avg_x = sum(item["cx"] for item in col) / len(col)
+                col_avg_w = sum(item["w"] for item in col) / len(col)
+                if abs(b["cx"] - col_avg_x) < max(col_avg_w * 0.7, 15):
+                    col.append(b)
+                    placed = True
+                    break
+            if not placed:
+                columns.append([b])
+
+        # 3. Внутри каждого столбца сортируем сверху вниз (cy)
+        sorted_texts = []
+        for col in columns:
+            col.sort(key=lambda b: b["cy"])
+            # В японском/китайском иероглифы внутри столбца склеиваются без пробелов:
+            column_text = "".join(item["text"] for item in col)
+            sorted_texts.append(column_text)
+
+        return "\n".join(sorted_texts).strip()
+
+    def unload(self) -> None:
+        self._engine = None
