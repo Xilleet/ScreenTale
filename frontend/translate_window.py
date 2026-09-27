@@ -1,9 +1,10 @@
 """Окно перевода и независимый парящий мини-тулбар управления."""
+import re
 import sys
 from ctypes import wintypes
 
 from PySide6.QtCore import QPoint, QPropertyAnimation, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QTextCursor
+from PySide6.QtGui import QColor, QFont, QPainter, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -712,9 +713,34 @@ class TranslateWindow(QWidget):
             return
         cursor = QTextCursor(self.text_widget.document())
         cursor.movePosition(QTextCursor.MoveOperation.End)
+
+        # 1. Отступ между репликами (воздух)
         if self.text_widget.toPlainText().strip():
-            cursor.insertText("\n\n---\n\n")
-        cursor.insertText(text)
+            cursor.insertText("\n\n")
+
+        # 2. Выделяем таймштамп янтарным акцентом, а саму реплику — цветом пергамента
+        match = re.match(r"^(\(\d{2}:\d{2}:\d{2}\))\s*(.*)$", text, re.DOTALL)
+        if match:
+            time_str, body_str = match.group(1), match.group(2)
+
+            # Янтарный таймштамп (визуальный маркер реплики)
+            fmt_time = QTextCharFormat()
+            fmt_time.setForeground(QColor("#e08e45"))
+            cursor.setCharFormat(fmt_time)
+            cursor.insertText(time_str + " ")
+
+            # Пергаментный текст перевода
+            fmt_body = QTextCharFormat()
+            fmt_body.setForeground(QColor("#f2ede4"))
+            cursor.setCharFormat(fmt_body)
+            cursor.insertText(body_str)
+        else:
+            # Обычный текст без таймштампа
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#f2ede4"))
+            cursor.setCharFormat(fmt)
+            cursor.insertText(text)
+
         self.text_widget.setTextCursor(cursor)
         self.text_widget.ensureCursorVisible()
 
