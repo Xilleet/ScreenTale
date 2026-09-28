@@ -694,9 +694,9 @@ class AppController(QObject):
         self.settings_win.toast.show_toast("Кэш моделей полностью очищен")
 
     def _on_gpu_result(self, success, is_gpu, message):
-        # OCR больше не имеет права перезаписывать пользовательский тумблер GPU
-        if success:
-            self.model_manager.set_device(is_gpu)
+        # OCR больше не имеет права перезаписывать состояние видеопамяти для моделей!
+        # ModelManager управляется строго через self.settings.get("gpu")
+        pass
 
     # ---------- иконка и трей ----------
     def _get_icon(self):

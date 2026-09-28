@@ -731,6 +731,7 @@ class SettingsWindow(QWidget):
         self.gguf_combo = QComboBox()
         self.gguf_combo.setObjectName("GgufCombo")
         self.gguf_combo.setMinimumWidth(220)
+        self.gguf_combo.wheelEvent = lambda event: event.ignore()
         self.gguf_combo.currentIndexChanged.connect(self._on_gguf_combo_changed)
 
         self.btn_open_models_dir = QPushButton("📂 Папка models")

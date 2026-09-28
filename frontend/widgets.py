@@ -71,6 +71,12 @@ class ToggleSwitch(QAbstractButton):
         p.setBrush(QColor("#ffffff"))
         p.drawEllipse(QRectF(x, 4, d, d))
 
+    def setChecked(self, checked):
+        super().setChecked(checked)
+        # Принудительно ставим позицию кружка без анимации (1.0 = справа, 0.0 = слева)
+        self._pos = 1.0 if checked else 0.0
+        self.update()
+
 
 # ============================================================
 # SegmentedControl — капсула с взаимоисключающими кнопками
