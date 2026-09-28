@@ -43,6 +43,7 @@ from backend.auto_mode import AutoModeWorker
 from backend.config import SettingsManager
 from backend.hotkeys import HotkeyManager
 from backend.ocr import OcrWorker
+from backend.runtime_manager import RuntimeDownloadWorker
 from backend.translators import (
     ENGINE_LABELS,
     LOCAL_ENGINES,
@@ -208,6 +209,7 @@ class AppController(QObject):
         self.settings_win.update_banner.snooze_clicked.connect(self._on_update_snoozed)
 
         self.settings_win.download_gguf_requested.connect(self._on_download_gguf)
+        self.settings_win.install_runtime_requested.connect(self._on_install_runtime)
         self.settings_win.delete_gguf_requested.connect(self._on_delete_gguf)
 
     def _toggle_pause_auto(self):
@@ -249,6 +251,37 @@ class AppController(QObject):
             self.trans_win.show_translation("[История очищена]")
         elif action == "ghost":
             self.trans_win.toggle_ghost_mode()
+
+    def _on_install_runtime(self, backend_id: str):
+        print(f"[ctrl] Запрос на установку рантайма: {backend_id}")
+        self.settings_win.runtime_load_started()
+
+        # Если llama-server сейчас запущен — глушим перед перезаписью
+        if self.settings.get("translator") == "qwen":
+            self.model_manager.unload()
+
+        self._runtime_worker = RuntimeDownloadWorker(backend_id)
+        self._runtime_worker.progress.connect(self.settings_win.runtime_progress)
+        self._runtime_worker.failed.connect(self._on_runtime_failed)
+        self._runtime_worker.finished.connect(self._on_runtime_finished)
+        self._runtime_worker.start_download()
+
+    def _on_runtime_failed(self, backend_id: str, error: str):
+        print(f"[ctrl] Ошибка установки рантайма {backend_id}: {error}")
+        self.settings_win.runtime_failed(backend_id, error)
+        self.settings_win.toast.show_toast(f"Сбой установки движка: {error}", ms=4000)
+
+    def _on_runtime_finished(self, backend_id: str):
+        print(f"[ctrl] Рантайм {backend_id} успешно установлен и прошел Smoke Test!")
+        self.settings_win.runtime_finished(backend_id)
+        self.settings_win.toast.show_toast(f"Движок {backend_id.upper()} готов к работе!")
+
+        # Если у нас сейчас выбран Qwen и выбрана модель — запускаем сервер
+        if self.settings.get("translator") == "qwen":
+            selected_model = self.settings.get("selected_gguf", "")
+            if selected_model:
+                use_gpu = bool(self.settings.get("gpu", True))
+                self.model_manager.load("qwen", use_gpu=use_gpu, model_filename=selected_model)
 
     def _on_download_gguf(self, item_dict: dict):
         from backend.llama_server import GgufDownloadWorker

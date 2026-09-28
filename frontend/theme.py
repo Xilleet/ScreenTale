@@ -225,8 +225,7 @@ QMenu::item:hover, QMenu::item:selected {
     color: @text;
 }
 QMenu::item:disabled {
-    color: @accent;
-    font-weight: 600;
+    color: @text_dim;
 }
 QMenu::separator {
     height: 1px;

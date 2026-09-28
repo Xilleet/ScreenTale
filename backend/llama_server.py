@@ -17,7 +17,8 @@ import urllib.request
 
 from PySide6.QtCore import QObject, Signal
 
-from backend.config import get_app_dir, get_data_dir
+from backend.config import get_data_dir
+from backend.runtime_manager import get_server_exe
 
 # ============================================================
 # Каталог проверенных моделей (Direct HuggingFace GGUF Links)
@@ -61,11 +62,6 @@ SYSTEM_PROMPT = (
 
 _CREATE_NO_WINDOW = 0x08000000
 _job = None  # Job Object с KILL_ON_JOB_CLOSE: сервер не переживёт приложение
-
-
-def get_server_exe() -> str:
-    return os.path.join(get_app_dir(), "llama", "llama-server.exe")
-
 
 def get_models_dir() -> str:
     d = os.path.join(get_data_dir(), "models")
@@ -290,11 +286,15 @@ class LlamaServerTranslator:
                 "-c", str(self._n_ctx), "-np", "1",
                 "--host", "127.0.0.1", "--port", str(self._port)]
 
+    # backend/llama_server.py -> класс LlamaServerTranslator
+
     def start(self, timeout: float = 180.0) -> None:
         model = resolve_model_path(self._model_filename)
         if not model or not os.path.isfile(get_server_exe()):
             raise RuntimeError(
                 "Не найден llama\\llama-server.exe или выбранная .gguf-модель")
+
+        t_start = time.perf_counter()  # <-- 1. Засекаем старт
 
         self._port = _free_port()
         log_path = os.path.join(get_data_dir(), "llama_server.log")
@@ -317,6 +317,10 @@ class LlamaServerTranslator:
             try:
                 with self._opener.open(self._url("/health"), timeout=2) as r:
                     if r.status == 200:
+                        # <-- 2. Считаем время, когда сервер полностью готов и ответил 200 OK
+                        elapsed = time.perf_counter() - t_start
+                        model_name = os.path.basename(model)
+                        print(f"[llama] Модель '{model_name}' загружена в VRAM и готова к работе за {elapsed:.2f} сек!")
                         return
             except (urllib.error.URLError, OSError):
                 pass

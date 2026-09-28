@@ -1,7 +1,7 @@
 import os
 import sys
 
-from PySide6.QtCore import Qt, QTimer, Signal, qVersion
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal, qVersion
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -23,6 +24,12 @@ from PySide6.QtWidgets import (
 from backend.config import APP_VERSION, get_app_dir
 from backend.hotkeys import HotkeyManager
 from backend.logging_setup import set_verbose
+from backend.runtime_manager import (
+    BACKENDS_CONFIG,
+    detect_best_backend,
+    get_installed_backend,
+    is_backend_supported,
+)
 from backend.translators import ENGINE_LABELS
 from frontend.theme import PALETTE, apply_theme
 from frontend.widgets import (
@@ -47,7 +54,7 @@ TRANSLATOR_HINTS = {
     "mymemory": "Онлайн-сервис MyMemory. Есть лимиты запросов, качество среднее.",
     "opus": "Локальная модель Opus-MT (~300 МБ). Только en→ru, работает офлайн.",
     "nllb": "Локальная модель NLLB-200 (~2.5 ГБ). Работает офлайн, качество выше.",
-    "qwen": "Локальная LLM (GGUF) через llama-server. Нужны llama\\llama-server.exe и .gguf в data\\models. Работает на видеокарте независимо от тумблера GPU.",
+    "qwen": "Локальная нейросеть (GGUF). Работает полностью офлайн на вашей видеокарте или процессоре через движок llama.cpp.",
 }
 
 OCR_ENGINES = [
@@ -220,6 +227,7 @@ class SettingsWindow(QWidget):
     download_gguf_requested = Signal(dict)
     delete_gguf_requested = Signal(str)
     clear_all_cache_requested = Signal()
+    install_runtime_requested = Signal(str)
 
     HOTKEY_ACTIONS = (
         ("single", "Перевести выделенную область"),
@@ -721,6 +729,35 @@ class SettingsWindow(QWidget):
         self.model_hint.hide()
         cv.addWidget(self.model_hint)
 
+        # --- Блок управления движком llama.cpp ---
+        self.runtime_ctrl_row = QWidget()
+        self.runtime_ctrl_row.setObjectName("Row")
+        r_lay = QHBoxLayout(self.runtime_ctrl_row)
+        r_lay.setContentsMargins(0, 6, 0, 0)
+        r_lay.setSpacing(10)
+
+        self.runtime_pill = StatusPill()
+        r_lay.addWidget(self.runtime_pill, 1)
+
+        self.btn_install_runtime = QPushButton("Установить движок")
+        self.btn_install_runtime.setObjectName("Ghost")
+        self.btn_install_runtime.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_install_runtime.clicked.connect(self._show_runtime_menu)
+        r_lay.addWidget(self.btn_install_runtime)
+
+        cv.addWidget(self.runtime_ctrl_row)
+
+        self.runtime_bar = BusyBar()
+        self.runtime_bar.hide()
+        cv.addWidget(self.runtime_bar)
+
+        self.runtime_hint = QLabel("")
+        self.runtime_hint.setObjectName("Hint")
+        self.runtime_hint.setWordWrap(True)
+        self.runtime_hint.hide()
+        cv.addWidget(self.runtime_hint)
+        # ----------------------------------------
+
         # 2. Выбор GGUF файла (ComboBox + кнопка папки)
         self.gguf_select_row = QWidget()
         self.gguf_select_row.setObjectName("Row")
@@ -895,8 +932,19 @@ class SettingsWindow(QWidget):
         # Режим Qwen / GGUF
         if engine == ENGINE_QWEN:
             self.model_ctrl_row.hide()
+            self.runtime_ctrl_row.show()
             self.gguf_select_row.show()
             self.catalog_frame.show()
+
+            # Обновляем статус рантайма
+            installed_backend = get_installed_backend()
+            if installed_backend and installed_backend in BACKENDS_CONFIG:
+                b_name = BACKENDS_CONFIG[installed_backend]["title"].split("(")[0].strip()
+                self.runtime_pill.set_state("ok", f"Движок llama.cpp: {b_name}")
+                self.btn_install_runtime.setText("Сменить движок")
+            else:
+                self.runtime_pill.set_state("off", "Движок llama.cpp: не установлен")
+                self.btn_install_runtime.setText("Установить движок")
 
             installed = get_installed_models()
             installed_names = [m["filename"] for m in installed]
@@ -939,6 +987,9 @@ class SettingsWindow(QWidget):
             return
 
         # Стандартный режим Opus / NLLB
+        self.runtime_ctrl_row.hide() 
+        self.runtime_bar.hide()      
+        self.runtime_hint.hide()     
         self.gguf_select_row.hide()
         self.catalog_frame.hide()
 
@@ -1064,6 +1115,84 @@ class SettingsWindow(QWidget):
         else:
             self.model_bar.set_value(percent)
         self.model_hint.setText(label)
+
+    # frontend/settings_window.py -> класс SettingsWindow
+
+    def _show_runtime_menu(self):
+        """Умное меню выбора бэкенда с проверкой железа и отметкой активного."""
+        menu = QMenu(self)
+        best = detect_best_backend()
+        best_title = BACKENDS_CONFIG.get(best, {}).get("title", best).split("(")[0].strip()
+        current_backend = get_installed_backend()
+
+        # 1. Автоопределение
+        act_auto = menu.addAction(f"Авто: {best_title} (Рекомендуется)")
+        act_auto.triggered.connect(lambda: self.install_runtime_requested.emit(best))
+        menu.addSeparator()
+
+        # 2. Список доступных бэкендов
+        for b_id, cfg in BACKENDS_CONFIG.items():
+            supported, reason = is_backend_supported(b_id)
+            title = cfg["title"]
+            is_active = (b_id == current_backend)
+
+            # Формируем читаемую подпись
+            if is_active:
+                label = f"✓ {title} (Установлен)"
+            elif not supported:
+                label = f"  {title} (Недоступно: {reason})"
+            else:
+                label = f"  {title}"
+
+            act = menu.addAction(label)
+
+            if not supported:
+                # Если железо не поддерживает — выключаем пункт и вешаем подсказку
+                act.setEnabled(False)
+                act.setToolTip(f"Невозможно запустить: {reason}")
+            else:
+                act.triggered.connect(lambda _=False, b=b_id: self.install_runtime_requested.emit(b))
+
+        self.btn_install_runtime.setEnabled(True)
+
+        # Выравнивание строго под кнопкой по правому краю
+        menu_width = menu.sizeHint().width()
+        btn_pos = self.btn_install_runtime.mapToGlobal(QPoint(0, 0))
+        x = btn_pos.x() + self.btn_install_runtime.width() - menu_width
+        y = btn_pos.y() + self.btn_install_runtime.height() + 4
+
+        menu.exec(QPoint(x, y))
+
+    def runtime_load_started(self):
+        self.runtime_pill.set_state("busy", "Установка движка…")
+        self.btn_install_runtime.setEnabled(False)
+        self.runtime_hint.show()
+        self.runtime_hint.setText("Подготовка…")
+        self.runtime_bar.show()
+        self.runtime_bar.start_indeterminate()
+
+    def runtime_progress(self, percent: int, label: str):
+        if not self.runtime_bar.isVisible():
+            self.runtime_bar.show()
+            self.runtime_hint.show()
+        if percent < 0:
+            self.runtime_bar.start_indeterminate()
+        else:
+            self.runtime_bar.set_value(percent)
+        self.runtime_hint.setText(label)
+
+    def runtime_finished(self, backend_id: str):
+        self.runtime_bar.hide()
+        self.runtime_hint.hide()
+        self.btn_install_runtime.setEnabled(True)
+        self._update_cache_display()
+
+    def runtime_failed(self, backend_id: str, error: str):
+        self.runtime_bar.hide()
+        self.runtime_hint.setText(f"Ошибка: {error}")
+        self.runtime_hint.show()
+        self.btn_install_runtime.setEnabled(True)
+        self.runtime_pill.set_state("error", "Сбой установки")
 
     def model_loaded(self, engine_id):
         self.model_finished("ok", f"Модель готова: {ENGINE_LABELS.get(engine_id, engine_id)}")
