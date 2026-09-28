@@ -148,3 +148,27 @@ llama/mtmd.dll
 data/models/
 *.gguf
 llama/
+Новая папка/main.py
+Новая папка/backend/__init__.py
+Новая папка/backend/auto_mode.py
+Новая папка/backend/config.py
+Новая папка/backend/hotkeys.py
+Новая папка/backend/llama_server.py
+Новая папка/backend/logging_setup.py
+Новая папка/backend/ocr_engines.py
+Новая папка/backend/ocr.py
+Новая папка/backend/translators.py
+Новая папка/backend/updater.py
+Новая папка/frontend/__init__.py
+Новая папка/frontend/screen_selector.py
+Новая папка/frontend/settings_window.py
+Новая папка/frontend/theme.py
+Новая папка/frontend/translate_window.py
+Новая папка/frontend/widgets.py
+Новая папка/frontend/icons/drag_64.png
+Новая папка/frontend/icons/ghost_64.png
+Новая папка/frontend/icons/pause_64.png
+Новая папка/frontend/icons/play_64.png
+Новая папка/frontend/icons/refresh_64.png
+Новая папка/frontend/icons/stop_64.png
+Новая папка/frontend/icons/trash_64.png

@@ -686,7 +686,6 @@ class TranslateWindow(QWidget):
             if self.toolbar._is_docked:
                 self.toolbar.align_to_window()
             else:
-                # Если тулбар оставили над текстом во время паузы — отскакиваем при пробуждении:
                 self.toolbar.on_drag_finished()
 
     def toggle_ghost_mode(self) -> bool:

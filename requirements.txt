@@ -7,6 +7,7 @@ pyperclip==1.11.0
 pyside6==6.11.2
 pyside6_addons==6.11.2
 pyside6_essentials==6.11.2
+rapidocr_onnxruntime==1.2.3
 torch==2.12.1
 tqdm==4.70.1
 transformers==5.17.0
