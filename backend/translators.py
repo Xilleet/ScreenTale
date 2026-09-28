@@ -55,29 +55,44 @@ def get_folder_size(path: str) -> int:
         pass
     return total
 
+# --- ЗАМЕНИТЬ В ФАЙЛЕ backend/translators.py ---
+
+_nvml_initialized = False
+_nvml_handle = None
+
 def get_vram_info() -> tuple[int, int, str] | None:
     """Возвращает (used_bytes, total_bytes, gpu_name) через системный драйвер NVIDIA или torch."""
+    global _nvml_initialized, _nvml_handle
+    
     # 1. Нативный замер через nvml.dll (0 зависимостей, точный замер VRAM всей системы)
     if sys.platform == "win32":
         try:
             import ctypes
             nvml = ctypes.WinDLL("nvml.dll")
-            if nvml.nvmlInit_v2() == 0:
+            
+            # Инициализируем NVML ровно один раз за сессию программы
+            if not _nvml_initialized and nvml.nvmlInit_v2() == 0:
                 handle = ctypes.c_void_p()
                 if nvml.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(handle)) == 0:
-                    class _NvmlMem(ctypes.Structure):
-                        _fields_ = [("total", ctypes.c_ulonglong),
-                                    ("free", ctypes.c_ulonglong),
-                                    ("used", ctypes.c_ulonglong)]
-                    mem = _NvmlMem()
-                    name_buf = ctypes.create_string_buffer(64)
-                    name = ""
-                    if nvml.nvmlDeviceGetName(handle, name_buf, 64) == 0:
-                        name = name_buf.value.decode("utf-8", errors="ignore")
-                    if nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem)) == 0:
-                        nvml.nvmlShutdown()
-                        return int(mem.used), int(mem.total), name
-                nvml.nvmlShutdown()
+                    _nvml_handle = handle
+                    _nvml_initialized = True
+
+            if _nvml_initialized and _nvml_handle:
+                class _NvmlMem(ctypes.Structure):
+                    _fields_ = [("total", ctypes.c_ulonglong),
+                                ("free", ctypes.c_ulonglong),
+                                ("used", ctypes.c_ulonglong)]
+                mem = _NvmlMem()
+                
+                # Имя получаем только если оно нам нужно (для экономии можно и закешировать, но это не так критично)
+                name_buf = ctypes.create_string_buffer(64)
+                name = ""
+                if nvml.nvmlDeviceGetName(_nvml_handle, name_buf, 64) == 0:
+                    name = name_buf.value.decode("utf-8", errors="ignore")
+                    
+                if nvml.nvmlDeviceGetMemoryInfo(_nvml_handle, ctypes.byref(mem)) == 0:
+                    return int(mem.used), int(mem.total), name
+                    
         except Exception:
             pass
 

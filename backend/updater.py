@@ -137,10 +137,16 @@ class UpdateDownloadWorker(QObject):
             updater_bat = os.path.join(temp_dir, "updater.bat")
             extracted_dir = os.path.join(temp_dir, "extracted")
 
+            # --- ЗАМЕНИТЬ В ФАЙЛЕ backend/updater.py (около 107 строки) ---
+
             with open(updater_bat, "w", encoding="utf-8") as f:
                 f.write(f"""@echo off
 chcp 65001 > nul
-timeout /t 2 /nobreak > nul
+:wait_process
+timeout /t 1 /nobreak > nul
+tasklist /FI "IMAGENAME eq ScreenTale.exe" 2>NUL | find /I /N "ScreenTale.exe">NUL
+if "%ERRORLEVEL%"=="0" goto wait_process
+
 powershell -Command "Expand-Archive -Path '{zip_path}' -DestinationPath '{extracted_dir}' -Force"
 if exist "{extracted_dir}\\ScreenTale" (
     xcopy "{extracted_dir}\\ScreenTale\\*" "{app_dir}\\" /s /e /y /q > nul

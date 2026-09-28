@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 APP_VERSION = "0.6.0-beta"
 
@@ -72,6 +72,13 @@ class SettingsManager(QObject):
         super().__init__()
         self._values = copy.deepcopy(DEFAULTS)
         self._first_run = not os.path.exists(CONFIG_PATH)
+        
+        # ДОБАВЛЕНО: Таймер отложенного сохранения (debounce)
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(500)  # Сохраняем не чаще, чем раз в полсекунды
+        self._save_timer.timeout.connect(self._do_save)
+        
         self._load()
 
     @property
@@ -109,13 +116,20 @@ class SettingsManager(QObject):
             self.changed.emit(key, self._values[key])
 
     def save(self):
+        # Теперь метод save() просто взводит таймер, а не пишет на диск сразу
+        self._save_timer.start()
+
+    def force_save(self):
+        # Экстренное сохранение (для вызова при закрытии программы)
+        self._save_timer.stop()
+        self._do_save()
+
+    def _do_save(self):
+        # старый код из метода save() переезжает сюда
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(self._values, f, indent=4, ensure_ascii=False)
         except OSError as _e:
-            # Диск защищён от записи / путь утерян / нет места — раньше юзер
-            # менял настройки, закрывал прогу и обнаруживал при след. запуске
-            # старые значения. Теперь причина видна в app.log.
             print(f"[warn] не удалось сохранить настройки: {_e}")
 
     def _load(self):

@@ -69,13 +69,17 @@ def normalize_ocr_text(text: str) -> str:
 
 def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
     """Адаптивное увеличение картинки фильтром Ланцоша для четкости мелких шрифтов.
-
     Также защищает от ограничения WinRT API (минимальный размер кадра 40x40).
     """
     w, h = img.size
+    
+    # ФИКС: Защита от нулевого размера (иначе PIL.resize упадет с ValueError)
+    if w <= 0 or h <= 0:
+        return img
+
     # 1. Защита от минимального размера Windows OCR (WinRT требует минимум 40x40 px)
     if w < 40 or h < 40:
-        scale_min = max(40 / max(w, 1), 40 / max(h, 1)) * 1.2
+        scale_min = max(40 / w, 40 / h) * 1.2
         new_size = (int(w * scale_min), int(h * scale_min))
         return img.resize(new_size, Image.Resampling.LANCZOS)
 

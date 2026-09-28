@@ -6,6 +6,7 @@
 import faulthandler
 import os
 import sys
+import threading
 import time
 
 LOG_NAME = "app.log"
@@ -51,21 +52,24 @@ def setup_logging(app_dir: str):
     class _Tee:
         def __init__(self, *streams):
             self._streams = streams
+            self._lock = threading.Lock() # Добавляем мьютекс
 
         def write(self, data):
-            for s in self._streams:
-                try:
-                    s.write(data)
-                except Exception:
-                    pass
+            with self._lock: # Блокируем при записи
+                for s in self._streams:
+                    try:
+                        s.write(data)
+                    except Exception:
+                        pass
             return len(data)
 
         def flush(self):
-            for s in self._streams:
-                try:
-                    s.flush()
-                except Exception:
-                    pass
+            with self._lock: # Блокируем при сбросе буфера
+                for s in self._streams:
+                    try:
+                        s.flush()
+                    except Exception:
+                        pass
 
     # Подмена stdout/stderr — ОДИН раз, здесь. `or _log_file` подставляет
     # файл, если реального потока нет (windowed-сборка без консоли).

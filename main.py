@@ -854,16 +854,24 @@ class AppController(QObject):
 
     # ---------- выход ----------
     def exit_app(self):
+        # 1. Сначала ПРЯЧЕМ весь интерфейс, чтобы юзер видел мгновенный отклик
+        self.trans_win.hide()
+        self.settings_win.hide()
+        if getattr(self, "tray", None) is not None:
+            self.tray.hide()
+
+        # 2. Мягко останавливаем воркеры
         if self._auto_worker is not None:
             self._auto_worker.requestInterruption()
             self._auto_worker.wait(2000)
         self.ocr.stop()
         self.model_manager.stop()
         self.hotkeys.shutdown()
-        self.settings.save()
+        
+        # вызываем force_save() вместо save()
+        self.settings.force_save() 
+        
         QThreadPool.globalInstance().waitForDone(2000)
-        if getattr(self, "tray", None) is not None:
-            self.tray.hide()
         self.app.quit()
 
     def _retry_last_translation(self):

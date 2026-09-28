@@ -386,9 +386,6 @@ class ResizeGrip(QWidget):
             self._start_global_pos = event.globalPosition().toPoint()
             self._start_geo = self.parent_window.geometry()
             event.accept()
-        elif event.button() == Qt.MouseButton.RightButton:
-            self.parent_window.hide_manual()
-            event.accept()
 
     def mouseMoveEvent(self, event):
         if self._start_global_pos and (event.buttons() & Qt.MouseButton.LeftButton):
@@ -415,11 +412,7 @@ class CustomTextEdit(QTextEdit):
         self.setMinimumSize(0, 0)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.RightButton:
-            self.parent_window.hide_manual()
-            event.accept()
-        else:
-            self.parent_window.mousePressEvent(event)
+        self.parent_window.mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         self.parent_window.mouseMoveEvent(event)
@@ -568,6 +561,11 @@ class TranslateWindow(QWidget):
         self._reposition_overlays()
 
     def get_card_screen_rect(self) -> QRect:
+        # ДОБАВЛЕНО: Защита от нулевых координат при скрытом окне
+        if self.isHidden() or self.force_hidden:
+            global_pos = self.pos() + QPoint(SHADOW_MARGIN, SHADOW_MARGIN)
+            return QRect(global_pos, self.border_frame.size())
+            
         top_left = self.border_frame.mapToGlobal(QPoint(0, 0))
         return QRect(top_left, self.border_frame.size())
 
