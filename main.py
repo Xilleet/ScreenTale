@@ -920,6 +920,12 @@ class AppController(QObject):
 
 
 def main():
+    # Флаг быстрой консольной диагностики: python main.py --doctor
+    if "--doctor" in sys.argv:
+        from debug_diagnostics import run_diagnostics
+        run_diagnostics(export_zip=True)
+        return
+
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("screentale.app.1")
     except Exception:
