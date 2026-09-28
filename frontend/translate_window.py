@@ -95,8 +95,10 @@ class _GripButton(QPushButton):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             if not self._is_dragging:
+                # Обычный клик без перетаскивания: переключает режим (пристегнуть / отстегнуть)
                 self.toolbar.toggle_dock()
             else:
+                # Закончили тащить мышкой
                 self.toolbar.on_drag_finished()
             self._drag_start = None
             self._offset = None
@@ -303,16 +305,10 @@ class FloatingToolbar(QFrame):
 
         return self.clamp_to_screen(raw)
 
-    def align_to_window(self, parent_geo=None):
-        if self._is_docked and self.target_window:
-            target_pos = self._get_dock_anchor_pos(self._dock_anchor)
-            self.move(target_pos)
-            self.raise_()
-
     def undock(self):
-        if self._is_docked:
-            self._is_docked = False
-            self.dock_changed.emit(False)
+        """Открепляет тулбар в режим свободного полета."""
+        self._is_docked = False
+        self.dock_changed.emit(False)
 
     def toggle_dock(self):
         if self._is_docked:
@@ -323,20 +319,35 @@ class FloatingToolbar(QFrame):
             self.dock_to_window(self._dock_anchor)
 
     def dock_to_window(self, anchor: str = "top_right"):
-        if self.target_window:
+        """Пристегивает тулбар к конкретному углу окна перевода."""
+        if self.target_window and self.target_window.isVisible():
             self._is_docked = True
             self._dock_anchor = anchor
             self.align_to_window()
             self.dock_changed.emit(True)
 
+    def align_to_window(self, parent_geo=None):
+        """Следует за окном перевода ТОЛЬКО если тулбар пристегнут (_is_docked == True)."""
+        if self._is_docked and self.target_window and self.target_window.isVisible():
+            target_pos = self._get_dock_anchor_pos(self._dock_anchor)
+            self.move(target_pos)
+            self.raise_()
+
     def on_drag_finished(self):
-        """Срабатывает при отпускании мыши: отскок от текста и 4-сторонний магнит."""
+        """Срабатывает строго при завершении перетаскивания мышью."""
+        # 1. Если окно перевода скрыто (на паузе) — полная свобода в любой точке экрана
         if not self.target_window or not self.target_window.isVisible():
+            self.undock()
             return
 
+        # 2. Получаем границы видимой рамки текста (с запасом 4px)
         card = self.target_window.get_card_screen_rect()
         tb_rect = QRect(self.pos(), self.size())
 
+        # Расширяем зону проверки окна на 4px, чтобы тулбар не мог застрять даже на границе
+        forbidden_zone = card.adjusted(-4, -4, 4, 4)
+
+        # Вычисляем ближайший внешний угол для пристегивания
         anchors = ["top_right", "bottom_right", "top_left", "bottom_left"]
         best_anchor = "top_right"
         min_dist = 999999
@@ -348,14 +359,18 @@ class FloatingToolbar(QFrame):
                 min_dist = dist
                 best_anchor = a
 
-        # если бросили поверх текста — моментальный отскок к ближайшему углу!
-        if tb_rect.intersects(card):
+        # 3. ЖЕЛЕЗНЫЙ ОТСКОК: если бросили поверх окна текста — моментально выталкиваем наружу к углу!
+        if tb_rect.intersects(forbidden_zone):
             self.dock_to_window(best_anchor)
             return
 
-        # если отпустили близко (< 45 px) к любому из 4 углов — магнитимся к нему:
-        if min_dist < 45:
+        # 4. МАГНИТ: если бросили снаружи, но очень близко к углу (< 35 px) — прищёлкиваемся
+        if min_dist < 35:
             self.dock_to_window(best_anchor)
+            return
+
+        # 5. СВОБОДНЫЙ ПОЛЕТ: бросили где-то в стороне — остаемся в свободном плавании
+        self.undock()
 
 
 # ============================================================
@@ -600,8 +615,16 @@ class TranslateWindow(QWidget):
 
     def moveEvent(self, event):
         super().moveEvent(event)
-        if hasattr(self, "toolbar"):
-            self.toolbar.align_to_window()
+        if hasattr(self, "toolbar") and self.toolbar.isVisible():
+            if self.toolbar._is_docked:
+                # Если тулбар пристегнут — он послушно едет за окном
+                self.toolbar.align_to_window()
+            else:
+                # Если тулбар в свободном полете, но окно текста наехало на него — выталкиваем тулбар!
+                tb_rect = QRect(self.toolbar.pos(), self.toolbar.size())
+                card = self.get_card_screen_rect().adjusted(-4, -4, 4, 4)
+                if tb_rect.intersects(card):
+                    self.toolbar.on_drag_finished()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
