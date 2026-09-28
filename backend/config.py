@@ -35,7 +35,7 @@ DEFAULTS = {
     "ocr_direction": "horizontal",  # horizontal | vertical (Tategaki)
     "translator": "google",     # google | mymemory | opus | nllb | qwen
     "selected_gguf": "",        # имя выбранного .gguf файла в data/models
-    "gpu": False,
+    "gpu": True,
     "auto_copy": True,
     "auto_delay_ms": 800,
     "verbose_log": False,

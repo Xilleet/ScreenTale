@@ -138,7 +138,10 @@ class AppController(QObject):
             preferred_direction=preferred_dir,
         )
         self.ocr.state_changed.connect(self.settings_win.ocr_pill.set_state)
-        self.ocr.cuda_status.connect(self.settings_win.set_gpu_available)
+        from backend.translators import get_vram_info
+        # Честно проверяем наличие видеокарты через системный драйвер:
+        has_gpu = (get_vram_info() is not None)
+        self.settings_win.set_gpu_available(has_gpu)
         self.ocr.gpu_result.connect(self._on_gpu_result)
         self.ocr.read_result.connect(self._on_read_result)
         self.ocr.start()
@@ -647,7 +650,11 @@ class AppController(QObject):
     # ---------- настройки ----------
     def _on_setting_changed(self, key, value):
         if key == "gpu":
-            self.ocr.request_gpu(bool(value))
+            # 1. ОБЯЗАТЕЛЬНО отправляем команду переключения в менеджер моделей:
+            self.model_manager.set_device(bool(value))
+            if self.settings.get("ocr_engine") == "easyocr":
+                self.ocr.request_gpu(bool(value))
+
         elif key == "translator":
             self._pending_translations.clear()
             self._loading_queue.clear()
@@ -658,18 +665,21 @@ class AppController(QObject):
                 m_file = self.settings.get("selected_gguf", "") if value == "qwen" else ""
                 is_c, _ = is_model_cached(value, filename=m_file)
                 if is_c:
-                    self.model_manager.load(value, model_filename=m_file)
+                    use_gpu = bool(self.settings.get("gpu", True))
+                    self.model_manager.load(value, use_gpu=use_gpu, model_filename=m_file)
                 else:
                     self.model_manager.unload()
             else:
                 self.model_manager.unload()
                 self.settings_win.model_finished("off", "Локальная модель не загружена")
+
         elif key == "ocr_engine":
             self.ocr.request_engine(value)
         elif key == "ocr_direction":
             self.ocr.request_direction(value)
         elif key == "selected_gguf" and self.settings.get("translator") == "qwen":
-            self.model_manager.load("qwen", model_filename=value)
+            use_gpu = bool(self.settings.get("gpu", True))
+            self.model_manager.load("qwen", use_gpu=use_gpu, model_filename=value)
 
     def _on_delete_model(self, engine_id):
         self.model_manager.unload()
@@ -684,9 +694,7 @@ class AppController(QObject):
         self.settings_win.toast.show_toast("Кэш моделей полностью очищен")
 
     def _on_gpu_result(self, success, is_gpu, message):
-        actual = bool(success and is_gpu)
-        if bool(self.settings.get("gpu")) != actual:
-            self.settings.set("gpu", actual)
+        # OCR больше не имеет права перезаписывать пользовательский тумблер GPU
         if success:
             self.model_manager.set_device(is_gpu)
 

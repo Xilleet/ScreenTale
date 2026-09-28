@@ -394,6 +394,32 @@ class SettingsWindow(QWidget):
         scroll.setWidget(page)
         return scroll
 
+    def _update_vram_monitor(self):
+        from backend.translators import get_vram_info
+        info = get_vram_info()
+        if info is not None:
+            used_b, total_b, gpu_name = info
+            used_gb = used_b / (1024 ** 3)
+            total_gb = total_b / (1024 ** 3)
+            pct = min(int((used_b / max(total_b, 1)) * 100), 100)
+            name_str = f" · {gpu_name}" if gpu_name else ""
+            self.lbl_vram_text.setText(f"Видеопамять (VRAM): {used_gb:.1f} / {total_gb:.1f} ГБ ({pct}%){name_str}")
+            self.vram_bar.set_value(pct)
+            self.vram_widget.show()
+        else:
+            self.vram_widget.hide()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, "_vram_timer"):
+            self._update_vram_monitor()
+            self._vram_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if hasattr(self, "_vram_timer"):
+            self._vram_timer.stop()
+
     # ---------------- хелперы ----------------
     def _card(self, title=None):
         card = QFrame()
@@ -493,7 +519,8 @@ class SettingsWindow(QWidget):
         filename = self.gguf_combo.currentText()
         if filename and filename != self.settings.get("selected_gguf"):
             self.settings.set("selected_gguf", filename)
-            self._update_cache_display()
+            self._saved_timer.start()
+            # Не вызываем _update_cache_display() целиком, чтобы не сбрасывать комбобокс во время выбора!
 
     # ---------------- страница: Общие ----------------
     def _page_general(self):
@@ -628,6 +655,34 @@ class SettingsWindow(QWidget):
         self.translator_hint.setObjectName("Hint")
         self.translator_hint.setWordWrap(True)
         cv.addWidget(self.translator_hint)
+
+        # Виджет монитора VRAM (над комбобоксом и под описанием движка)
+
+        self.vram_widget = QWidget()
+        self.vram_widget.setObjectName("Row")
+        vram_lay = QVBoxLayout(self.vram_widget)
+        vram_lay.setContentsMargins(0, 6, 0, 6)
+        vram_lay.setSpacing(4)
+
+        vram_header = QHBoxLayout()
+        vram_header.setContentsMargins(0, 0, 0, 0)
+        self.lbl_vram_text = QLabel("Видеопамять (VRAM): —")
+        self.lbl_vram_text.setObjectName("Hint")
+        self.lbl_vram_text.setStyleSheet("font-size: 11px; color: #9c9388;")
+        vram_header.addWidget(self.lbl_vram_text)
+        vram_header.addStretch(1)
+
+        self.vram_bar = BusyBar()
+        self.vram_bar.setFixedHeight(5)
+
+        vram_lay.addLayout(vram_header)
+        vram_lay.addWidget(self.vram_bar)
+        cv.addWidget(self.vram_widget)
+
+        # Таймер опроса VRAM каждые 2 секунды (работает ТОЛЬКО при открытых настройках)
+        self._vram_timer = QTimer(self)
+        self._vram_timer.setInterval(2000)
+        self._vram_timer.timeout.connect(self._update_vram_monitor)
 
         # 1. Управление моделями Opus / NLLB (Статус + Кнопки)
         self.model_ctrl_row = QWidget()
@@ -845,26 +900,38 @@ class SettingsWindow(QWidget):
             installed = get_installed_models()
             installed_names = [m["filename"] for m in installed]
 
-            # Обновляем ComboBox
-            self.gguf_combo.blockSignals(True)
-            self.gguf_combo.clear()
-            for m in installed:
-                self.gguf_combo.addItem(m["filename"])
+            # 1. Обновляем элементы комбобокса ТОЛЬКО если список файлов на диске реально изменился:
+            current_items = [self.gguf_combo.itemText(i) for i in range(self.gguf_combo.count())]
+            if current_items != installed_names:
+                self.gguf_combo.blockSignals(True)
+                self.gguf_combo.clear()
+                for m in installed:
+                    self.gguf_combo.addItem(m["filename"])
+                self.gguf_combo.blockSignals(False)
 
-            cur_selected = self.settings.get("selected_gguf", "")
-            if cur_selected in installed_names:
-                self.gguf_combo.setCurrentText(cur_selected)
-            elif installed_names:
+            # 2. Ищем сохранённую модель без чувствительности к регистру букв:
+            cur_selected = str(self.settings.get("selected_gguf", "")).strip()
+            match_idx = -1
+            for i in range(self.gguf_combo.count()):
+                if self.gguf_combo.itemText(i).lower() == cur_selected.lower():
+                    match_idx = i
+                    break
+
+            self.gguf_combo.blockSignals(True)
+            if match_idx >= 0:
+                self.gguf_combo.setCurrentIndex(match_idx)
+            elif self.gguf_combo.count() > 0:
                 self.gguf_combo.setCurrentIndex(0)
-                self.settings.set("selected_gguf", installed_names[0])
+                self.settings.set("selected_gguf", self.gguf_combo.currentText())
             self.gguf_combo.blockSignals(False)
 
-            # Обновляем кнопки каталога
+            # 3. Обновляем кнопки каталога (Скачать / Удалить)
             for item in GGUF_CATALOG:
                 fn = item["filename"]
                 row = self.catalog_rows.get(fn)
                 if row:
-                    is_inst = fn in installed_names
+                    # Проверяем наличие файла без учета регистра
+                    is_inst = any(fn.lower() == name.lower() for name in installed_names)
                     row._btn_dl.setVisible(not is_inst)
                     row._btn_del.setVisible(is_inst)
 
@@ -955,11 +1022,15 @@ class SettingsWindow(QWidget):
         self._saved_timer.start()
 
     def _on_gpu_toggled(self, checked):
-        self.gpu_toggle.setEnabled(False)
-        self.gpu_bar.start_indeterminate()
-        self.gpu_pill.set_state("busy", "Перезапуск OCR-движка…")
         self.settings.set("gpu", bool(checked))
-        # Завершение придёт извне: контроллер -> gpu_apply_finished()
+        self.gpu_pill.set_state(
+            "ok" if checked else "off",
+            "GPU: ускорение активно" if checked else "CPU: стандартный режим"
+        )
+        self._saved_timer.start()
+        # Если активен EasyOCR — отправляем запрос воркеру:
+        if self.settings.get("ocr_engine") == "easyocr":
+            self.ocr.request_gpu(bool(checked))
 
     def gpu_apply_finished(self, success: bool, is_gpu: bool, message: str = ""):
         """Шов для бэкенда: OCR-воркер закончил переключение."""

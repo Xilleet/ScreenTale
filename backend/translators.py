@@ -4,6 +4,7 @@ import os
 import queue
 import re
 import shutil
+import sys
 import threading
 import time
 
@@ -54,6 +55,43 @@ def get_folder_size(path: str) -> int:
         pass
     return total
 
+def get_vram_info() -> tuple[int, int, str] | None:
+    """Возвращает (used_bytes, total_bytes, gpu_name) через системный драйвер NVIDIA или torch."""
+    # 1. Нативный замер через nvml.dll (0 зависимостей, точный замер VRAM всей системы)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            nvml = ctypes.WinDLL("nvml.dll")
+            if nvml.nvmlInit_v2() == 0:
+                handle = ctypes.c_void_p()
+                if nvml.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(handle)) == 0:
+                    class _NvmlMem(ctypes.Structure):
+                        _fields_ = [("total", ctypes.c_ulonglong),
+                                    ("free", ctypes.c_ulonglong),
+                                    ("used", ctypes.c_ulonglong)]
+                    mem = _NvmlMem()
+                    name_buf = ctypes.create_string_buffer(64)
+                    name = ""
+                    if nvml.nvmlDeviceGetName(handle, name_buf, 64) == 0:
+                        name = name_buf.value.decode("utf-8", errors="ignore")
+                    if nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem)) == 0:
+                        nvml.nvmlShutdown()
+                        return int(mem.used), int(mem.total), name
+                nvml.nvmlShutdown()
+        except Exception:
+            pass
+
+    # 2. Запасной замер через torch (если уже загружен в память)
+    try:
+        import torch
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()
+            name = torch.cuda.get_device_name(0)
+            return int(total - free), int(total), name
+    except Exception:
+        pass
+
+    return None
 
 def format_size(bytes_val: int) -> str:
     """Форматирование байтов в читаемый вид (ГБ / МБ)."""
@@ -405,7 +443,7 @@ class ModelManager(QThread):
         tr, self._translator = self._translator, None
         if tr is not None and hasattr(tr, "close"):
             try:
-                tr.close()          # останавливает llama-server.exe
+                tr.close()  # моментально закрывает llama-server.exe
             except Exception:
                 pass
         self._current_id = None
@@ -477,7 +515,7 @@ class ModelManager(QThread):
 
             self.progress.emit(-1, "Запуск llama-server…")
             self._drop_model()
-            tr = LlamaServerTranslator(use_gpu=True, model_filename=model_filename)
+            tr = LlamaServerTranslator(use_gpu=use_gpu, model_filename=model_filename)
             tr.start()
             self._translator = tr
             self._current_id = ENGINE_QWEN
@@ -502,8 +540,21 @@ class ModelManager(QThread):
 
     def _apply_device(self, use_gpu):
         self._use_gpu = use_gpu
+
+        # Если активен Qwen / llama-server — выгружаем из VRAM и перезапускаем
+        if self._current_id == ENGINE_QWEN and self._translator is not None:
+            m_file = getattr(self._translator, "_model_filename", "")
+            self.progress_started.emit()
+            self.progress.emit(-1, "Освобождение VRAM и перезапуск на CPU…" if not use_gpu else "Перенос модели в GPU (VRAM)…")
+            # 1. Полностью глушим сервер и чистим VRAM:
+            self._drop_model()
+            # 2. Поднимаем заново с флагом use_gpu (False = -ngl 0, True = -ngl 99):
+            self._load_llama(use_gpu, m_file)
+            return
+
         if self._translator is None:
             return
+
         cuda_ok = self._torch is not None and self._torch.cuda.is_available()
         device = "cuda" if (use_gpu and cuda_ok) else "cpu"
         try:
