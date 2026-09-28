@@ -6,7 +6,7 @@ import sys
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-APP_VERSION = "0.6.0-beta"
+APP_VERSION = "0.6.1-beta"
 
 
 def get_app_dir() -> str:
