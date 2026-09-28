@@ -330,11 +330,15 @@ class FloatingToolbar(QFrame):
             self.dock_changed.emit(True)
 
     def on_drag_finished(self):
+        """Срабатывает при отпускании мыши: отскок от текста и 4-сторонний магнит."""
         if not self.target_window or not self.target_window.isVisible():
             return
 
+        card = self.target_window.get_card_screen_rect()
+        tb_rect = QRect(self.pos(), self.size())
+
         anchors = ["top_right", "bottom_right", "top_left", "bottom_left"]
-        best_anchor = None
+        best_anchor = "top_right"
         min_dist = 999999
 
         for a in anchors:
@@ -344,7 +348,13 @@ class FloatingToolbar(QFrame):
                 min_dist = dist
                 best_anchor = a
 
-        if min_dist < 38 and best_anchor:
+        # если бросили поверх текста — моментальный отскок к ближайшему углу!
+        if tb_rect.intersects(card):
+            self.dock_to_window(best_anchor)
+            return
+
+        # если отпустили близко (< 45 px) к любому из 4 углов — магнитимся к нему:
+        if min_dist < 45:
             self.dock_to_window(best_anchor)
 
 
@@ -676,8 +686,8 @@ class TranslateWindow(QWidget):
             if self.toolbar._is_docked:
                 self.toolbar.align_to_window()
             else:
-                safe_pos = self.toolbar.resolve_collision(self.toolbar.pos())
-                self.toolbar.move(safe_pos)
+                # Если тулбар оставили над текстом во время паузы — отскакиваем при пробуждении:
+                self.toolbar.on_drag_finished()
 
     def toggle_ghost_mode(self) -> bool:
         self._ghost_mode = not self._ghost_mode
