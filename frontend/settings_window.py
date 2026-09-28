@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, qVersion
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -38,6 +39,7 @@ TRANSLATORS = [
     ("mymemory", "MyMemory"),
     ("opus", "Opus-MT"),
     ("nllb", "NLLB-200"),
+    ("qwen", "LLM"),
 ]
 
 TRANSLATOR_HINTS = {
@@ -45,6 +47,7 @@ TRANSLATOR_HINTS = {
     "mymemory": "Онлайн-сервис MyMemory. Есть лимиты запросов, качество среднее.",
     "opus": "Локальная модель Opus-MT (~300 МБ). Только en→ru, работает офлайн.",
     "nllb": "Локальная модель NLLB-200 (~2.5 ГБ). Работает офлайн, качество выше.",
+    "qwen": "Локальная LLM (GGUF) через llama-server. Нужны llama\\llama-server.exe и .gguf в data\\models. Работает на видеокарте независимо от тумблера GPU.",
 }
 
 OCR_ENGINES = [
@@ -214,8 +217,8 @@ class _UpdateBanner(QFrame):
 
 
 class SettingsWindow(QWidget):
-    download_model_requested = Signal(str)
-    delete_model_requested = Signal(str)
+    download_gguf_requested = Signal(dict)
+    delete_gguf_requested = Signal(str)
     clear_all_cache_requested = Signal()
 
     HOTKEY_ACTIONS = (
@@ -240,7 +243,7 @@ class SettingsWindow(QWidget):
         self.setWindowTitle("ScreenTale — Настройки")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedSize(760, 580)
+        self.setFixedSize(840, 600)
 
         self._drag_pos = None
 
@@ -430,6 +433,68 @@ class SettingsWindow(QWidget):
         v.setSpacing(14)
         return page, v
 
+    def _build_catalog_item_row(self, item: dict) -> QWidget:
+        w = QWidget()
+        w.setObjectName("Row")
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 4, 0, 4)
+        h.setSpacing(8)
+
+        left = QVBoxLayout()
+        left.setSpacing(2)
+        t_row = QHBoxLayout()
+        t_lbl = QLabel(f"<b>{item['title']}</b> ({item['approx_size']})")
+        b_lbl = QLabel(item["badge"])
+        b_lbl.setStyleSheet("color: #9c9388; font-size: 11px;")
+        t_row.addWidget(t_lbl)
+        t_row.addWidget(b_lbl)
+        t_row.addStretch(1)
+
+        d_lbl = QLabel(item["desc"])
+        d_lbl.setObjectName("Hint")
+        d_lbl.setWordWrap(True)
+
+        left.addLayout(t_row)
+        left.addWidget(d_lbl)
+        h.addLayout(left, 1)
+
+        btn_dl = QPushButton("⬇ Скачать")
+        btn_dl.setObjectName("Ghost")
+        btn_dl.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_dl.clicked.connect(lambda _=False, it=item: self.download_gguf_requested.emit(it))
+
+        btn_del = QPushButton("Удалить")
+        btn_del.setObjectName("Danger")
+        btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_del.clicked.connect(lambda _=False, fn=item["filename"]: self._confirm_delete_gguf(fn))
+
+        h.addWidget(btn_dl)
+        h.addWidget(btn_del)
+
+        w._btn_dl = btn_dl
+        w._btn_del = btn_del
+        return w
+
+    def _open_models_folder(self):
+        from backend.llama_server import get_models_dir
+        os.startfile(get_models_dir())
+
+    def _confirm_delete_gguf(self, filename: str):
+        ans = QMessageBox.question(
+            self,
+            "Удаление модели",
+            f"Удалить файл модели {filename} с диска?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans == QMessageBox.StandardButton.Yes:
+            self.delete_gguf_requested.emit(filename)
+
+    def _on_gguf_combo_changed(self, index):
+        filename = self.gguf_combo.currentText()
+        if filename and filename != self.settings.get("selected_gguf"):
+            self.settings.set("selected_gguf", filename)
+            self._update_cache_display()
+
     # ---------------- страница: Общие ----------------
     def _page_general(self):
         page, v = self._page()
@@ -552,15 +617,19 @@ class SettingsWindow(QWidget):
     def _page_translation(self):
         page, v = self._page()
 
+        # ========================================================
+        # Карточка 1: Движок перевода
+        # ========================================================
         card, cv = self._card("Движок перевода")
         self.translator_seg = SegmentedControl(TRANSLATORS)
         cv.addWidget(self.translator_seg)
+
         self.translator_hint = QLabel()
         self.translator_hint.setObjectName("Hint")
         self.translator_hint.setWordWrap(True)
         cv.addWidget(self.translator_hint)
 
-        # Ряд управления локальной моделью (Статус + кнопки Скачать/Удалить)
+        # 1. Управление моделями Opus / NLLB (Статус + Кнопки)
         self.model_ctrl_row = QWidget()
         self.model_ctrl_row.setObjectName("Row")
         mch = QHBoxLayout(self.model_ctrl_row)
@@ -597,7 +666,49 @@ class SettingsWindow(QWidget):
         self.model_hint.hide()
         cv.addWidget(self.model_hint)
 
-        # Разделитель и блок общего кэша
+        # 2. Выбор GGUF файла (ComboBox + кнопка папки)
+        self.gguf_select_row = QWidget()
+        self.gguf_select_row.setObjectName("Row")
+        gh = QHBoxLayout(self.gguf_select_row)
+        gh.setContentsMargins(0, 6, 0, 0)
+        gh.setSpacing(10)
+
+        self.gguf_combo = QComboBox()
+        self.gguf_combo.setObjectName("GgufCombo")
+        self.gguf_combo.setMinimumWidth(220)
+        self.gguf_combo.currentIndexChanged.connect(self._on_gguf_combo_changed)
+
+        self.btn_open_models_dir = QPushButton("📂 Папка models")
+        self.btn_open_models_dir.setObjectName("Ghost")
+        self.btn_open_models_dir.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_open_models_dir.clicked.connect(self._open_models_folder)
+
+        gh.addWidget(QLabel("Файл модели:"))
+        gh.addWidget(self.gguf_combo, 1)
+        gh.addWidget(self.btn_open_models_dir)
+        cv.addWidget(self.gguf_select_row)
+
+        # 3. ВОТ ЭТОТ БЛОК: Каталог проверенных GGUF-моделей
+        self.catalog_frame = QFrame()
+        self.catalog_frame.setObjectName("Card")
+        cat_v = QVBoxLayout(self.catalog_frame)
+        cat_v.setContentsMargins(12, 10, 12, 12)
+        cat_v.setSpacing(8)
+
+        lbl_cat_title = QLabel("Каталог проверенных моделей GGUF")
+        lbl_cat_title.setStyleSheet("font-weight: 600; color: #e08e45; font-size: 12px;")
+        cat_v.addWidget(lbl_cat_title)
+
+        self.catalog_rows = {}
+        from backend.llama_server import GGUF_CATALOG
+        for item in GGUF_CATALOG:
+            crow = self._build_catalog_item_row(item)
+            cat_v.addWidget(crow)
+            self.catalog_rows[item["filename"]] = crow
+
+        cv.addWidget(self.catalog_frame)
+
+        # 4. Общий кэш на диске
         cache_row = QWidget()
         cache_row.setObjectName("Row")
         ch = QHBoxLayout(cache_row)
@@ -606,7 +717,6 @@ class SettingsWindow(QWidget):
 
         self.lbl_cache_total = QLabel("Локальные модели на диске: 0 МБ")
         self.lbl_cache_total.setObjectName("Hint")
-        # Честное пояснение при наведении:
         self.lbl_cache_total.setToolTip(
             "В Windows кэш может дублировать файлы и накапливать старые ревизии весов.\n"
             "Кнопка «Очистить весь кэш» позволяет легко сбросить все накопленные дубликаты."
@@ -624,7 +734,9 @@ class SettingsWindow(QWidget):
         self.translator_seg.valueChanged.connect(self._on_translator_changed)
         v.addWidget(card)
 
-# РАЗМЕЩАЕМ МЕЖДУ ПЕРЕВОДОМ И ПРОИЗВОДИТЕЛЬНОСТЬЮ:
+        # ========================================================
+        # Карточка 2: Распознавание текста (OCR)
+        # ========================================================
         card_ocr, c_ocr = self._card("Распознавание текста (OCR)")
         self.ocr_seg = SegmentedControl(OCR_ENGINES)
         c_ocr.addWidget(self.ocr_seg)
@@ -634,8 +746,6 @@ class SettingsWindow(QWidget):
         self.ocr_hint.setWordWrap(True)
         c_ocr.addWidget(self.ocr_hint)
 
-        # Выбор направления текста (Tategaki для манги и новелл)
-        # Сохраняем строку направления в переменную self.dir_row:
         self.dir_seg = SegmentedControl(OCR_DIRECTIONS, vertical=True)
         self.dir_seg.setMinimumWidth(210)
         self.dir_row = self._option_row(
@@ -652,6 +762,9 @@ class SettingsWindow(QWidget):
         self.dir_seg.valueChanged.connect(self._on_dir_changed)
         v.addWidget(card_ocr)
 
+        # ========================================================
+        # Карточка 3: Производительность
+        # ========================================================
         card2, c2 = self._card("Производительность")
         self.gpu_toggle = ToggleSwitch()
         c2.addWidget(self._option_row(
@@ -668,7 +781,9 @@ class SettingsWindow(QWidget):
         self.gpu_toggle.toggled.connect(self._on_gpu_toggled)
         v.addWidget(card2)
 
-        # Карточка Авто-режима (из Шага 1)
+        # ========================================================
+        # Карточка 4: Авто-режим
+        # ========================================================
         card_auto, c_auto = self._card("Авто-режим")
         drow = QWidget()
         drow.setObjectName("Row")
@@ -706,21 +821,59 @@ class SettingsWindow(QWidget):
         return page
 
     def _update_cache_display(self):
-        """Обновляет статус выбранной модели и общий размер кэша."""
+        from backend.llama_server import GGUF_CATALOG, get_installed_models
         from backend.translators import (
             _MODEL_SPECS,
+            ENGINE_QWEN,
             LOCAL_ENGINES,
             format_size,
             get_total_cache_size,
             is_model_cached,
         )
-        # 1. Общий кэш
+
+        engine = self.settings.get("translator", "google")
         total_size = get_total_cache_size()
         self.lbl_cache_total.setText(f"Локальные модели на диске: {format_size(total_size)}")
         self.btn_clear_all.setEnabled(total_size > 0)
 
-        # 2. Статус текущего выбранного движка
-        engine = self.settings.get("translator", "google")
+        # Режим Qwen / GGUF
+        if engine == ENGINE_QWEN:
+            self.model_ctrl_row.hide()
+            self.gguf_select_row.show()
+            self.catalog_frame.show()
+
+            installed = get_installed_models()
+            installed_names = [m["filename"] for m in installed]
+
+            # Обновляем ComboBox
+            self.gguf_combo.blockSignals(True)
+            self.gguf_combo.clear()
+            for m in installed:
+                self.gguf_combo.addItem(m["filename"])
+
+            cur_selected = self.settings.get("selected_gguf", "")
+            if cur_selected in installed_names:
+                self.gguf_combo.setCurrentText(cur_selected)
+            elif installed_names:
+                self.gguf_combo.setCurrentIndex(0)
+                self.settings.set("selected_gguf", installed_names[0])
+            self.gguf_combo.blockSignals(False)
+
+            # Обновляем кнопки каталога
+            for item in GGUF_CATALOG:
+                fn = item["filename"]
+                row = self.catalog_rows.get(fn)
+                if row:
+                    is_inst = fn in installed_names
+                    row._btn_dl.setVisible(not is_inst)
+                    row._btn_del.setVisible(is_inst)
+
+            return
+
+        # Стандартный режим Opus / NLLB
+        self.gguf_select_row.hide()
+        self.catalog_frame.hide()
+
         if engine not in LOCAL_ENGINES:
             self.model_ctrl_row.hide()
             self.btn_download_model.hide()

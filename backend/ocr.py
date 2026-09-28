@@ -293,5 +293,5 @@ class OcrWorker(QThread):
             self.read_result.emit(bbox, f"[Ошибка OCR: {e}]", context)
 
     def request_direction(self, direction: str) -> None:
-            """Сменить направление текста ('horizontal' или 'vertical')."""
-            self._tasks.put(("set_direction", str(direction)))
+        """Сменить направление текста ('horizontal' или 'vertical')."""
+        self._tasks.put(("set_direction", str(direction)))

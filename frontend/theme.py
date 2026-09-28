@@ -103,6 +103,32 @@ QSlider::sub-page:horizontal { background: @accent; border-radius: 2px; }
 QSlider::handle:horizontal { background: #ffffff; width: 15px; margin: -5px 0; border-radius: 7px; }
 QSlider::handle:horizontal:hover { background: #ffffff; border: 1px solid @accent; }
 
+QComboBox {
+    background-color: @bg;
+    border: 1px solid @stroke;
+    border-radius: 6px;
+    padding: 5px 10px;
+    color: @text;
+    font-size: 13px;
+}
+QComboBox:hover {
+    border-color: @accent;
+}
+QComboBox::drop-down {
+    border: none;
+    padding-right: 6px;
+}
+QComboBox QAbstractItemView {
+    background-color: @bg_card;
+    border: 1px solid @stroke;
+    border-radius: 6px;
+    padding: 4px;
+    color: @text;
+    selection-background-color: @bg_hover;
+    selection-color: @text;
+    outline: none;
+}
+
 QPushButton { background-color: @bg_hover; border: 1px solid @stroke; border-radius: 8px; padding: 8px 14px; }
 QPushButton:hover { background-color: @btn_hover; }
 QPushButton:pressed { background-color: @stroke; }

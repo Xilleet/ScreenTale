@@ -1,5 +1,4 @@
 """ScreenTale v0.5.0 — точка входа и контроллер приложения."""
-"""ScreenTale v0.5.0 — точка входа и контроллер приложения."""
 import ctypes
 import datetime
 import multiprocessing
@@ -205,6 +204,9 @@ class AppController(QObject):
         self.settings_win.update_banner.update_clicked.connect(self._start_auto_update)
         self.settings_win.update_banner.snooze_clicked.connect(self._on_update_snoozed)
 
+        self.settings_win.download_gguf_requested.connect(self._on_download_gguf)
+        self.settings_win.delete_gguf_requested.connect(self._on_delete_gguf)
+
     def _toggle_pause_auto(self):
         if not self._auto_active:
             self.trans_win.show_translation("[Авто-режим не запущен]")
@@ -244,6 +246,34 @@ class AppController(QObject):
             self.trans_win.show_translation("[История очищена]")
         elif action == "ghost":
             self.trans_win.toggle_ghost_mode()
+
+    def _on_download_gguf(self, item_dict: dict):
+        from backend.llama_server import GgufDownloadWorker
+        self.settings_win.model_load_started()
+
+        self._gguf_worker = GgufDownloadWorker(item_dict)
+        self._gguf_worker.progress.connect(self.settings_win.model_progress)
+        self._gguf_worker.failed.connect(lambda fn, err: self.settings_win.model_failed("qwen", err))
+        self._gguf_worker.finished.connect(self._on_gguf_download_finished)
+        self._gguf_worker.start_download()
+
+    def _on_gguf_download_finished(self, filename: str):
+        self.settings.set("selected_gguf", filename)
+        self.settings_win.model_loaded("qwen")
+        self.settings_win._update_cache_display()
+        self.settings_win.toast.show_toast(f"Модель {filename} успешно скачана!")
+        # Если qwen сейчас выбран — сразу запускаем сервер
+        if self.settings.get("translator") == "qwen":
+            self.model_manager.load("qwen", model_filename=filename)
+
+    def _on_delete_gguf(self, filename: str):
+        from backend.llama_server import delete_gguf_model
+        if self.settings.get("translator") == "qwen":
+            self.model_manager.unload()
+
+        delete_gguf_model(filename)
+        self.settings_win._update_cache_display()
+        self.settings_win.toast.show_toast(f"Модель {filename} удалена")
 
     # ---------- выделение области и OCR ----------
     def _start_selection(self):
@@ -625,9 +655,10 @@ class AppController(QObject):
             self.trans_win.set_status("off", "Ожидание")
 
             if value in LOCAL_ENGINES:
-                is_c, _ = is_model_cached(value)
+                m_file = self.settings.get("selected_gguf", "") if value == "qwen" else ""
+                is_c, _ = is_model_cached(value, filename=m_file)
                 if is_c:
-                    self.model_manager.load(value)
+                    self.model_manager.load(value, model_filename=m_file)
                 else:
                     self.model_manager.unload()
             else:
@@ -637,6 +668,8 @@ class AppController(QObject):
             self.ocr.request_engine(value)
         elif key == "ocr_direction":
             self.ocr.request_direction(value)
+        elif key == "selected_gguf" and self.settings.get("translator") == "qwen":
+            self.model_manager.load("qwen", model_filename=value)
 
     def _on_delete_model(self, engine_id):
         self.model_manager.unload()

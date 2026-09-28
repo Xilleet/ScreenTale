@@ -6,7 +6,7 @@ import sys
 
 from PySide6.QtCore import QObject, Signal
 
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.6.0-beta"
 
 
 def get_app_dir() -> str:
@@ -33,12 +33,14 @@ DEFAULTS = {
     "opacity": 0.95,
     "ocr_engine": "windows",    # windows | rapidocr | easyocr
     "ocr_direction": "horizontal",  # horizontal | vertical (Tategaki)
-    "translator": "google",     # google | mymemory | opus | nllb
+    "translator": "google",     # google | mymemory | opus | nllb | qwen
+    "selected_gguf": "",        # имя выбранного .gguf файла в data/models
     "gpu": False,
     "auto_copy": True,
     "auto_delay_ms": 800,
-    "verbose_log": False,   # тумблер "Подробный лог" в Настройках → О программе
+    "verbose_log": False,
     "update_snooze_until": "",
+    "welcome_completed": False,
     "hotkeys": {
         # mods — флаги RegisterHotKey, vk — виртуальный код Windows
         "single":        {"label": "Alt+Q",  "mods": 0x0001, "vk": 0x51},
@@ -58,7 +60,7 @@ _OLD_TRANSLATOR_MAP = {
     "Локально (Быстро - 300МБ)": "opus",
     "Локально (Качественно - 2.5ГБ)": "nllb",
 }
-_VALID_TRANSLATORS = {"google", "mymemory", "opus", "nllb"}
+_VALID_TRANSLATORS = {"google", "mymemory", "opus", "nllb", "qwen"}
 
 
 class SettingsManager(QObject):
@@ -126,7 +128,8 @@ class SettingsManager(QObject):
             return
 
         for key in ("theme", "font_size", "opacity", "gpu", "auto_copy",
-                    "auto_delay_ms", "verbose_log", "ocr_engine", "ocr_direction", "welcome_completed"):
+                    "auto_delay_ms", "verbose_log", "ocr_engine", "ocr_direction",
+                    "welcome_completed", "selected_gguf"):
             if key in data:
                 self._values[key] = data[key]
 

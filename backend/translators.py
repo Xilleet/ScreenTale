@@ -16,18 +16,21 @@ ENGINE_GOOGLE = "google"
 ENGINE_MYMEMORY = "mymemory"
 ENGINE_OPUS = "opus"
 ENGINE_NLLB = "nllb"
-LOCAL_ENGINES = (ENGINE_OPUS, ENGINE_NLLB)
+ENGINE_QWEN = "qwen"   # GGUF через llama-server.exe (см. backend/llama_server.py)
+LOCAL_ENGINES = (ENGINE_OPUS, ENGINE_NLLB, ENGINE_QWEN)
 
 ENGINE_LABELS = {
     ENGINE_GOOGLE: "Google",
     ENGINE_MYMEMORY: "MyMemory",
     ENGINE_OPUS: "Opus-MT",
     ENGINE_NLLB: "NLLB-200",
+    ENGINE_QWEN: "Qwen (llama.cpp)",
 }
 
 _MODEL_SPECS = {
     ENGINE_OPUS: {"repo": "Helsinki-NLP/opus-mt-en-ru", "approx_size": "~300 МБ"},
     ENGINE_NLLB: {"repo": "facebook/nllb-200-distilled-600M", "approx_size": "~2.5 ГБ"},
+    ENGINE_QWEN: {"repo": None, "approx_size": "~1 ГБ, .gguf в data\\models"},
 }
 
 _DEVNULL = open(os.devnull, "w")
@@ -74,7 +77,7 @@ def format_speed(bps: float) -> str:
 def get_model_cache_dir(engine_id: str) -> str | None:
     """Возвращает путь к папке кэша конкретной модели в hf_cache."""
     spec = _MODEL_SPECS.get(engine_id)
-    if not spec:
+    if not spec or not spec.get("repo"):
         return None
     repo_id = spec["repo"]
     folder_name = "models--" + repo_id.replace("/", "--")
@@ -88,8 +91,11 @@ def get_model_cache_dir(engine_id: str) -> str | None:
     return path_hub
 
 
-def is_model_cached(engine_id: str) -> tuple[bool, int]:
-    """Проверяет, скачана ли модель (весит ли папка > 50 МБ). Возвращает (is_cached, size_bytes)."""
+def is_model_cached(engine_id: str, filename: str = "") -> tuple[bool, int]:
+    """Проверяет, скачана ли модель. Возвращает (is_cached, size_bytes)."""
+    if engine_id == ENGINE_QWEN:
+        from backend.llama_server import is_available
+        return is_available(filename)
     path = get_model_cache_dir(engine_id)
     if not path or not os.path.exists(path):
         return False, 0
@@ -347,8 +353,8 @@ class ModelManager(QThread):
         self._torch = None
 
     # ---- публичный API (потокобезопасно) ----
-    def load(self, engine_id, use_gpu=None):
-        self._tasks.put(("load", engine_id, use_gpu))
+    def load(self, engine_id, use_gpu=None, model_filename=""):
+        self._tasks.put(("load", engine_id, use_gpu, model_filename))
 
     def unload(self):
         self._tasks.put(("unload",))
@@ -374,41 +380,60 @@ class ModelManager(QThread):
         except Exception:
             self._torch = None
 
-        while not self._stop_flag:
-            try:
-                task = self._tasks.get(timeout=0.3)
-            except queue.Empty:
-                continue
-            kind = task[0]
-            if kind == "stop":
-                break
-            if kind == "load":
-                self._load(task[1], task[2])
-            elif kind == "unload":
-                self._unload()
-            elif kind == "translate":
-                self._translate(task[1], task[2])
-            elif kind == "set_device":
-                self._apply_device(task[1])
+        try:
+            while not self._stop_flag:
+                try:
+                    task = self._tasks.get(timeout=0.3)
+                except queue.Empty:
+                    continue
+                kind = task[0]
+                if kind == "stop":
+                    break
+                if kind == "load":
+                    m_file = task[3] if len(task) > 3 else ""
+                    self._load(task[1], task[2], m_file)
+                elif kind == "unload":
+                    self._unload()
+                elif kind == "translate":
+                    self._translate(task[1], task[2])
+                elif kind == "set_device":
+                    self._apply_device(task[1])
+        finally:
+            self._drop_model()
 
     def _drop_model(self):
-        self._translator = None
+        tr, self._translator = self._translator, None
+        if tr is not None and hasattr(tr, "close"):
+            try:
+                tr.close()          # останавливает llama-server.exe
+            except Exception:
+                pass
         self._current_id = None
         gc.collect()
         if self._torch is not None and self._torch.cuda.is_available():
             self._torch.cuda.empty_cache()
 
-    def _load(self, engine_id, use_gpu_override):
+    def _load(self, engine_id, use_gpu_override, model_filename=""):
         use_gpu = self._use_gpu if use_gpu_override is None else bool(use_gpu_override)
-        if self._current_id == engine_id and self._translator is not None:
+        if (
+            self._current_id == engine_id
+            and self._translator is not None
+            and (engine_id != ENGINE_QWEN or getattr(self._translator, "_model_filename", "") == model_filename)
+        ):
             self.ready.emit(engine_id)
             return
+
         spec = _MODEL_SPECS.get(engine_id)
         if spec is None:
             self.failed.emit(engine_id, "Неизвестный идентификатор модели")
             return
 
         self.progress_started.emit()
+        if engine_id == ENGINE_QWEN:
+            self._load_llama(use_gpu, model_filename)
+            return
+
+        # дальше загрузка Opus / NLLB без изменений...
         try:
             # Фаза 1: скачивание с процентами (из кэша — мгновенно)
             from huggingface_hub import snapshot_download
@@ -440,6 +465,26 @@ class ModelManager(QThread):
             _ProgressTqdm.tracker = None
             self._drop_model()
             self.failed.emit(engine_id, str(e))
+
+    def _load_llama(self, use_gpu, model_filename=""):
+        try:
+            from backend.llama_server import LlamaServerTranslator, is_available
+            ok, _ = is_available(model_filename)
+            if not ok:
+                self._drop_model()
+                self.failed.emit(ENGINE_QWEN, "Файл .gguf или llama-server.exe не найдены")
+                return
+
+            self.progress.emit(-1, "Запуск llama-server…")
+            self._drop_model()
+            tr = LlamaServerTranslator(use_gpu=True, model_filename=model_filename)
+            tr.start()
+            self._translator = tr
+            self._current_id = ENGINE_QWEN
+            self.ready.emit(ENGINE_QWEN)
+        except Exception as e:
+            self._drop_model()
+            self.failed.emit(ENGINE_QWEN, str(e))
 
     def _unload(self):
         if self._translator is not None:

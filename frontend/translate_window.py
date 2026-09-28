@@ -770,17 +770,17 @@ class TranslateWindow(QWidget):
 
             fmt_time = QTextCharFormat()
             fmt_time.setForeground(QColor("#e08e45"))
-            cursor.setCharFormat(fmt_time)
+            cursor.mergeCharFormat(fmt_time)       
             cursor.insertText(time_str + " ")
 
             fmt_body = QTextCharFormat()
             fmt_body.setForeground(QColor("#f2ede4"))
-            cursor.setCharFormat(fmt_body)
+            cursor.mergeCharFormat(fmt_body)      
             cursor.insertText(body_str)
         else:
             fmt = QTextCharFormat()
             fmt.setForeground(QColor("#f2ede4"))
-            cursor.setCharFormat(fmt)
+            cursor.mergeCharFormat(fmt)           
             cursor.insertText(text)
 
         self.text_widget.setTextCursor(cursor)
