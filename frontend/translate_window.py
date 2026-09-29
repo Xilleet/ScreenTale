@@ -648,32 +648,39 @@ class TranslateWindow(QWidget):
         elif key == "opacity":
             self.update_opacity(float(value))
 
+    # frontend/translate_window.py -> класс TranslateWindow
+
     def update_font_size(self, size):
-        size = int(size)
+        self._font_size = int(size)
+
+        # 1. Единый объект шрифта Segoe UI
+        self._current_font = QFont("Segoe UI", self._font_size)
+        self.text_widget.setFont(self._current_font)
+
+        # 2. Документ целиком переходит на этот размер
+        doc = self.text_widget.document()
+        doc.setDefaultFont(self._current_font)
+
+        # 3. В стилях задаем только прозрачность и цвет скролла (БЕЗ font-size!)
         self.text_widget.setStyleSheet(
-            f"""
-            QTextEdit {{
+            """
+            QTextEdit {
                 background-color: transparent;
                 color: #ffffff;
                 border: none;
-                font-size: {size}px;
-            }}
-            QScrollBar:vertical {{ border: none; background: transparent; width: 4px; margin: 0px; }}
-            QScrollBar::handle:vertical {{ background: rgba(255,255,255,0.25); min-height: 20px; border-radius: 2px; }}
-            QScrollBar::handle:vertical:hover {{ background: rgba(255,255,255,0.5); }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+            }
+            QScrollBar:vertical { border: none; background: transparent; width: 4px; margin: 0px; }
+            QScrollBar::handle:vertical { background: rgba(255,255,255,0.25); min-height: 20px; border-radius: 2px; }
+            QScrollBar::handle:vertical:hover { background: rgba(255,255,255,0.5); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
             """
         )
-        new_font = QFont("Segoe UI", size)
-        self.text_widget.setFont(new_font)
-        doc = self.text_widget.document()
-        doc.setDefaultFont(new_font)
 
+        # 4. Обновляем ВСЕ уже напечатанные строки в документе (выделяем всё и ставим размер)
         cursor = QTextCursor(doc)
         cursor.select(QTextCursor.SelectionType.Document)
-        fmt = cursor.charFormat()
-        fmt.setFont(new_font)
-        fmt.setFontPointSize(size)
+        fmt = QTextCharFormat()
+        fmt.setFont(self._current_font)
         cursor.mergeCharFormat(fmt)
 
     def update_opacity(self, value):
@@ -798,27 +805,31 @@ class TranslateWindow(QWidget):
         if self.text_widget.toPlainText().strip():
             cursor.insertText("\n\n")
 
+        if not hasattr(self, "_current_font"):
+            self._current_font = QFont("Segoe UI", getattr(self, "_font_size", 14))
+
         # 2. Выделяем таймштамп янтарным акцентом, а саму реплику — цветом пергамента
         match = re.match(r"^(\(\d{2}:\d{2}:\d{2}\))\s*(.*)$", text, re.DOTALL)
         if match:
             time_str, body_str = match.group(1), match.group(2)
 
             fmt_time = QTextCharFormat()
+            fmt_time.setFont(self._current_font)            
             fmt_time.setForeground(QColor("#e08e45"))
-            fmt_time.setFontPointSize(self._font_size)
-            cursor.mergeCharFormat(fmt_time)       
+            cursor.setCharFormat(fmt_time)                  
             cursor.insertText(time_str + " ")
 
+            # Формат реплики
             fmt_body = QTextCharFormat()
+            fmt_body.setFont(self._current_font)            
             fmt_body.setForeground(QColor("#f2ede4"))
-            fmt_body.setFontPointSize(self._font_size)
-            cursor.mergeCharFormat(fmt_body)      
+            cursor.setCharFormat(fmt_body)                  
             cursor.insertText(body_str)
         else:
             fmt = QTextCharFormat()
+            fmt.setFont(self._current_font)                
             fmt.setForeground(QColor("#f2ede4"))
-            fmt.setFontPointSize(self._font_size)
-            cursor.mergeCharFormat(fmt)           
+            cursor.setCharFormat(fmt)                      
             cursor.insertText(text)
 
         self.text_widget.setTextCursor(cursor)
