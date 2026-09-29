@@ -568,6 +568,9 @@ class TranslateWindow(QWidget):
         self.toolbar.clear_clicked.connect(self.clear_requested.emit)
         self.toolbar.ghost_clicked.connect(self.toggle_ghost_mode)
 
+        
+        self._font_size = int(settings.get("font_size", 14))
+
         settings.changed.connect(self._on_setting_changed)
         self.update_font_size(int(settings.get("font_size", 14)))
         self.update_opacity(float(settings.get("opacity", 0.95)))
@@ -665,10 +668,12 @@ class TranslateWindow(QWidget):
         self.text_widget.setFont(new_font)
         doc = self.text_widget.document()
         doc.setDefaultFont(new_font)
+
         cursor = QTextCursor(doc)
         cursor.select(QTextCursor.SelectionType.Document)
         fmt = cursor.charFormat()
         fmt.setFont(new_font)
+        fmt.setFontPointSize(size)
         cursor.mergeCharFormat(fmt)
 
     def update_opacity(self, value):
@@ -800,16 +805,19 @@ class TranslateWindow(QWidget):
 
             fmt_time = QTextCharFormat()
             fmt_time.setForeground(QColor("#e08e45"))
+            fmt_time.setFontPointSize(self._font_size)
             cursor.mergeCharFormat(fmt_time)       
             cursor.insertText(time_str + " ")
 
             fmt_body = QTextCharFormat()
             fmt_body.setForeground(QColor("#f2ede4"))
+            fmt_body.setFontPointSize(self._font_size)
             cursor.mergeCharFormat(fmt_body)      
             cursor.insertText(body_str)
         else:
             fmt = QTextCharFormat()
             fmt.setForeground(QColor("#f2ede4"))
+            fmt.setFontPointSize(self._font_size)
             cursor.mergeCharFormat(fmt)           
             cursor.insertText(text)
 
