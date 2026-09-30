@@ -145,6 +145,7 @@ class AppController(QObject):
             src_lang=self.settings.get("src_lang", "en"),
         )
         self.ocr.state_changed.connect(self.settings_win.ocr_pill.set_state)
+        self.ocr.engine_changed.connect(self.settings_win.on_active_ocr_changed)
         from backend.translators import get_vram_info
         # Честно проверяем наличие видеокарты через системный драйвер:
         has_gpu = (get_vram_info() is not None)

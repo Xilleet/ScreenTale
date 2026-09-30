@@ -1290,6 +1290,10 @@ class SettingsWindow(QWidget):
         self._update_ocr_lang_warning()
         self._saved_timer.start()
 
+    def on_active_ocr_changed(self, engine_id: str):
+        """Реагирует на фактическую смену движка под капотом (например, при авто-откате)."""
+        self.dir_row.setVisible(engine_id == "rapidocr")
+
     def _on_dir_changed(self, ident):
         self.settings.set("ocr_direction", ident)
         self._saved_timer.start()
