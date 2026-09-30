@@ -419,6 +419,7 @@ class ModelManager(QThread):
     def __init__(self, initial_gpu: bool = False):
         super().__init__()
         self._use_gpu = bool(initial_gpu)
+        self._n_threads = 0
         self._tasks = queue.Queue()
         self._stop_flag = False
         self._current_id = None
@@ -426,8 +427,8 @@ class ModelManager(QThread):
         self._torch = None
 
     # ---- публичный API (потокобезопасно) ----
-    def load(self, engine_id, use_gpu=None, model_filename=""):
-        self._tasks.put(("load", engine_id, use_gpu, model_filename))
+    def load(self, engine_id, use_gpu=None, model_filename="", n_threads=0):
+        self._tasks.put(("load", engine_id, use_gpu, model_filename, n_threads))
 
     def unload(self):
         self._tasks.put(("unload",))
@@ -464,7 +465,8 @@ class ModelManager(QThread):
                     break
                 if kind == "load":
                     m_file = task[3] if len(task) > 3 else ""
-                    self._load(task[1], task[2], m_file)
+                    threads = task[4] if len(task) > 4 else 0
+                    self._load(task[1], task[2], m_file, threads)
                 elif kind == "unload":
                     self._unload()
                 elif kind == "translate":
@@ -488,12 +490,17 @@ class ModelManager(QThread):
         if self._torch is not None and self._torch.cuda.is_available():
             self._torch.cuda.empty_cache()
 
-    def _load(self, engine_id, use_gpu_override, model_filename=""):
+    def _load(self, engine_id, use_gpu_override, model_filename="", n_threads=0):
         use_gpu = self._use_gpu if use_gpu_override is None else bool(use_gpu_override)
+        self._n_threads = int(n_threads)
+
         if (
             self._current_id == engine_id
             and self._translator is not None
-            and (engine_id != ENGINE_QWEN or getattr(self._translator, "_model_filename", "") == model_filename)
+            and (engine_id != ENGINE_QWEN or (
+                getattr(self._translator, "_model_filename", "") == model_filename
+                and getattr(self._translator, "_n_threads", 0) == self._n_threads
+            ))
         ):
             self.ready.emit(engine_id)
             return
@@ -505,10 +512,9 @@ class ModelManager(QThread):
 
         self.progress_started.emit()
         if engine_id == ENGINE_QWEN:
-            self._load_llama(use_gpu, model_filename)
+            self._load_llama(use_gpu, model_filename, self._n_threads)
             return
 
-        # дальше загрузка Opus / NLLB без изменений...
         try:
             # Фаза 1: скачивание с процентами (из кэша — мгновенно)
             from huggingface_hub import snapshot_download
@@ -541,7 +547,7 @@ class ModelManager(QThread):
             self._drop_model()
             self.failed.emit(engine_id, str(e))
 
-    def _load_llama(self, use_gpu, model_filename=""):
+    def _load_llama(self, use_gpu, model_filename="", n_threads=0):
         try:
             from backend.llama_server import LlamaServerTranslator, is_available
             ok, _ = is_available(model_filename)
@@ -552,7 +558,8 @@ class ModelManager(QThread):
 
             self.progress.emit(-1, "Запуск llama-server…")
             self._drop_model()
-            tr = LlamaServerTranslator(use_gpu=use_gpu, model_filename=model_filename)
+            # Передаем n_threads в транслятор:
+            tr = LlamaServerTranslator(use_gpu=use_gpu, model_filename=model_filename, n_threads=n_threads)
             tr.start()
             self._translator = tr
             self._current_id = ENGINE_QWEN
@@ -581,12 +588,11 @@ class ModelManager(QThread):
         # Если активен Qwen / llama-server — выгружаем из VRAM и перезапускаем
         if self._current_id == ENGINE_QWEN and self._translator is not None:
             m_file = getattr(self._translator, "_model_filename", "")
+            n_threads = getattr(self._translator, "_n_threads", 0)
             self.progress_started.emit()
             self.progress.emit(-1, "Освобождение VRAM и перезапуск на CPU…" if not use_gpu else "Перенос модели в GPU (VRAM)…")
-            # 1. Полностью глушим сервер и чистим VRAM:
             self._drop_model()
-            # 2. Поднимаем заново с флагом use_gpu (False = -ngl 0, True = -ngl 99):
-            self._load_llama(use_gpu, m_file)
+            self._load_llama(use_gpu, m_file, n_threads)
             return
 
         if self._translator is None:

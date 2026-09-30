@@ -186,7 +186,9 @@ class AppController(QObject):
         if engine in LOCAL_ENGINES:
             is_c, _ = is_model_cached(engine)
             if is_c:
-                self.model_manager.load(engine)
+                m_file = self.settings.get("selected_gguf", "") if engine == "qwen" else ""
+                n_threads = int(self.settings.get("cpu_threads", 0))
+                self.model_manager.load(engine, model_filename=m_file, n_threads=n_threads)
 
         self.settings.changed.connect(self._on_setting_changed)
         self.translation_ready.connect(self._apply_translation_result)
@@ -709,10 +711,11 @@ class AppController(QObject):
 
             if value in LOCAL_ENGINES:
                 m_file = self.settings.get("selected_gguf", "") if value == "qwen" else ""
+                n_threads = int(self.settings.get("cpu_threads", 0))
                 is_c, _ = is_model_cached(value, filename=m_file)
                 if is_c:
                     use_gpu = bool(self.settings.get("gpu", True))
-                    self.model_manager.load(value, use_gpu=use_gpu, model_filename=m_file)
+                    self.model_manager.load(value, use_gpu=use_gpu, model_filename=m_file, n_threads=n_threads)
                 else:
                     self.model_manager.unload()
             else:
@@ -732,6 +735,12 @@ class AppController(QObject):
             src = self.settings.get("src_lang", "en")
             dst = self.settings.get("dst_lang", "ru")
             self.trans_win.toolbar.update_lang_badge(src, dst)
+        elif key == "cpu_threads":
+            # Если сейчас работает Qwen — перезапускаем сервер с новым количеством потоков
+            if self.settings.get("translator") == "qwen":
+                m_file = self.settings.get("selected_gguf", "")
+                use_gpu = bool(self.settings.get("gpu", True))
+                self.model_manager.load("qwen", use_gpu=use_gpu, model_filename=m_file, n_threads=int(value))
 
     def _on_delete_model(self, engine_id):
         self.model_manager.unload()

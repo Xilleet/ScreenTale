@@ -271,10 +271,11 @@ class GgufDownloadWorker(QObject):
 # Серверный транслятор через subprocess
 # ============================================================
 class LlamaServerTranslator:
-    def __init__(self, use_gpu: bool = True, n_ctx: int = 2048, model_filename: str = ""):
+    def __init__(self, use_gpu: bool = True, n_ctx: int = 2048, model_filename: str = "", n_threads: int = 0):
         self._use_gpu = bool(use_gpu)
         self._n_ctx = n_ctx
         self._model_filename = model_filename
+        self._n_threads = int(n_threads)
         self._proc = None
         self._port = None
         self._log = None
@@ -305,9 +306,13 @@ class LlamaServerTranslator:
         return data["choices"][0]["message"]["content"].strip()
 
     def _build_cmd(self, model: str) -> list:
+        # Авто-расчет: половина логических ядер, если стоит 0
+        effective_threads = self._n_threads if self._n_threads > 0 else max(1, (os.cpu_count() or 4) // 2)
+
         return [get_server_exe(), "-m", model,
                 "-ngl", "99" if self._use_gpu else "0",
                 "-c", str(self._n_ctx), "-np", "1",
+                "-t", str(effective_threads),
                 "--host", "127.0.0.1", "--port", str(self._port)]
 
     # backend/llama_server.py -> класс LlamaServerTranslator

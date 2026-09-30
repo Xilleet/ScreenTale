@@ -41,6 +41,7 @@ DEFAULTS = {
     "gpu": True,
     "auto_copy": True,
     "auto_delay_ms": 800,
+    "cpu_threads": 0,
     "verbose_log": False,
     "update_snooze_until": "",
     "welcome_completed": False,
@@ -146,7 +147,7 @@ class SettingsManager(QObject):
 
         for key in ("theme", "font_size", "opacity", "gpu", "auto_copy",
                     "auto_delay_ms", "verbose_log", "ocr_engine", "ocr_direction",
-                    "welcome_completed", "selected_gguf", "src_lang", "dst_lang", "recent_pairs"):
+                    "welcome_completed", "selected_gguf", "src_lang", "dst_lang", "recent_pairs", "cpu_threads"):
             if key in data:
                 self._values[key] = data[key]
 

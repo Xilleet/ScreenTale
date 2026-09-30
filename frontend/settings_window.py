@@ -376,7 +376,7 @@ class SettingsWindow(QWidget):
 
         self.nav = QListWidget()
         self.nav.setObjectName("Nav")
-        for name in ("Общие", "Перевод", "Горячие клавиши", "О программе"):
+        for name in ("Общие", "Перевод", "Горячие клавиши", "Продвинутые", "О программе"):
             self.nav.addItem(QListWidgetItem(name))
         v.addWidget(self.nav, 1)
 
@@ -392,6 +392,7 @@ class SettingsWindow(QWidget):
         self.pages.addWidget(self._wrap(self._page_general()))
         self.pages.addWidget(self._wrap(self._page_translation()))
         self.pages.addWidget(self._wrap(self._page_hotkeys()))
+        self.pages.addWidget(self._wrap(self._page_advanced()))
         self.pages.addWidget(self._wrap(self._page_about()))
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.nav.setCurrentRow(0)
@@ -975,42 +976,6 @@ class SettingsWindow(QWidget):
         self.gpu_toggle.toggled.connect(self._on_gpu_toggled)
         v.addWidget(card2)
 
-        # ========================================================
-        # Карточка 4: Авто-режим
-        # ========================================================
-        card_auto, c_auto = self._card("Авто-режим")
-        drow = QWidget()
-        drow.setObjectName("Row")
-        dh = QHBoxLayout(drow)
-        dh.setContentsMargins(0, 0, 0, 0)
-        dh.setSpacing(10)
-
-        left = QVBoxLayout()
-        left.setContentsMargins(0, 0, 0, 0)
-        left.setSpacing(2)
-        left.addWidget(QLabel("Задержка распознавания"))
-        hl = QLabel("Пауза для стабилизации текста перед отправкой в перевод (200–2000 мс).")
-        hl.setObjectName("Hint")
-        hl.setWordWrap(True)
-        left.addWidget(hl)
-        dh.addLayout(left, 1)
-
-        self.auto_delay_slider = QSlider(Qt.Orientation.Horizontal)
-        self.auto_delay_slider.setRange(200, 2000)
-        self.auto_delay_slider.setSingleStep(50)
-        self.auto_delay_slider.setMinimumWidth(180)
-
-        self.auto_delay_val = QLabel("800 мс")
-        self.auto_delay_val.setObjectName("Hint")
-        self.auto_delay_val.setFixedWidth(54)
-        self.auto_delay_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        dh.addWidget(self.auto_delay_slider)
-        dh.addWidget(self.auto_delay_val)
-        c_auto.addWidget(drow)
-        v.addWidget(card_auto)
-
-        self.auto_delay_slider.valueChanged.connect(self._on_auto_delay_slider)
         v.addStretch(1)
         return page
 
@@ -1378,6 +1343,138 @@ class SettingsWindow(QWidget):
         else:
             self._saved_timer.start()
 
+    def _page_advanced(self):
+        page, v = self._page()
+
+        # ========================================================
+        # Карточка 1: Процессор и нейросети
+        # ========================================================
+        card_cpu, c_cpu = self._card("Процессор и нейросети")
+
+        import os
+        total_cores = os.cpu_count() or 4
+        self._auto_threads = max(1, total_cores // 2)
+
+        # 1. Заголовок
+        lbl_threads = QLabel("Потоки процессора (CPU Threads)")
+        c_cpu.addWidget(lbl_threads)
+
+        # 2. Полноразмерный слайдер + значение
+        s_row = QHBoxLayout()
+        s_row.setContentsMargins(0, 0, 0, 0)
+        s_row.setSpacing(12)
+
+        self.threads_slider = QSlider(Qt.Orientation.Horizontal)
+        self.threads_slider.setRange(0, total_cores)  # 0 = Авто
+        self.threads_slider.setSingleStep(1)
+
+        self.threads_val = QLabel("Авто")
+        self.threads_val.setObjectName("Hint")
+        self.threads_val.setFixedWidth(75)
+        self.threads_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        s_row.addWidget(self.threads_slider, 1)
+        s_row.addWidget(self.threads_val)
+        c_cpu.addLayout(s_row)
+
+        # 3. Развернутое описание под слайдером на всю ширину
+        thl = QLabel(
+            "Выделенные ядра для нейросети. 'Авто' оставляет половину ядер процессора для системы и игр (левое положение).\n"
+            "⚠️ Внимание: изменение значения перезапускает локальный сервер нейросети (занимает 1–3 сек)."
+        )
+        thl.setObjectName("Hint")
+        thl.setWordWrap(True)
+        c_cpu.addWidget(thl)
+        v.addWidget(card_cpu)
+
+        # ========================================================
+        # Карточка 2: Авто-режим захвата
+        # ========================================================
+        card_auto, c_auto = self._card("Авто-режим захвата")
+
+        # 1. Заголовок
+        lbl_delay = QLabel("Задержка распознавания (Дебаунс)")
+        c_auto.addWidget(lbl_delay)
+
+        # 2. Полноразмерный слайдер + значение
+        d_row = QHBoxLayout()
+        d_row.setContentsMargins(0, 0, 0, 0)
+        d_row.setSpacing(12)
+
+        self.auto_delay_slider = QSlider(Qt.Orientation.Horizontal)
+        self.auto_delay_slider.setRange(200, 2000)
+        self.auto_delay_slider.setSingleStep(50)
+
+        self.auto_delay_val = QLabel("800 мс")
+        self.auto_delay_val.setObjectName("Hint")
+        self.auto_delay_val.setFixedWidth(75)
+        self.auto_delay_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        d_row.addWidget(self.auto_delay_slider, 1)
+        d_row.addWidget(self.auto_delay_val)
+        c_auto.addLayout(d_row)
+
+        # 3. Описание снизу
+        dhl = QLabel("Пауза для стабилизации текста перед отправкой для перевода (200–2000 мс).")
+        dhl.setObjectName("Hint")
+        dhl.setWordWrap(True)
+        c_auto.addWidget(dhl)
+        v.addWidget(card_auto)
+
+        # ========================================================
+        # Карточка 3: Диагностика и логирование
+        # ========================================================
+        card_diag, c_diag = self._card("Диагностика")
+        self.verbose_toggle = ToggleSwitch()
+        c_diag.addWidget(self._option_row(
+            "Подробный лог (для отладки)",
+            self.verbose_toggle,
+            "В app.log пишется полный текст OCR и переводов без обрезки."
+            "Включайте только при поиске ошибок."))
+        v.addWidget(card_diag)
+
+        # Подключаем сигналы
+        # Создаем таймер отложенного применения (debounce) для потоков CPU
+        self._threads_timer = QTimer(self)
+        self._threads_timer.setSingleShot(True)
+        self._threads_timer.setInterval(1000)  # Ждем 1 сек после остановки слайдера для кол-ва ядер CPU
+        self._threads_timer.timeout.connect(self._apply_threads_setting)
+
+        # Текст на слайдере меняем на лету, а сервер перезапускаем ТОЛЬКО при отпускании мыши
+        self.threads_slider.valueChanged.connect(self._on_threads_slider_changed)
+        self.threads_slider.sliderReleased.connect(self._apply_threads_setting)
+        self.auto_delay_slider.valueChanged.connect(self._on_auto_delay_slider)
+        self.verbose_toggle.toggled.connect(self._on_verbose_toggled)
+
+        v.addStretch(1)
+        return page
+
+    def _update_threads_display(self, value):
+        """Мгновенно обновляет подпись рядом со слайдером без лагов."""
+        if value == 0:
+            self.threads_val.setText(f"Авто ({getattr(self, '_auto_threads', 4)})")
+        else:
+            self.threads_val.setText(f"{value} яд.")
+
+    def _on_threads_slider_changed(self, value):
+        """Срабатывает при движении: обновляет текст и взводит таймер."""
+        self._update_threads_display(value)
+        # Если юзер еще двигает ползунок — перезапуск откладывается
+        self._threads_timer.start()
+
+    def _apply_threads_setting(self):
+        """Применяет настройку ТОЛЬКО когда юзер остановился или отпустил мышь."""
+        self._threads_timer.stop()
+        new_val = self.threads_slider.value()
+        current_saved = self.settings.get("cpu_threads", 0)
+
+        # ЗАЩИТА: если покрутил туда-обратно и вернул то же значение — сервер НЕ трогаем!
+        if new_val == current_saved:
+            return
+
+        self.settings.set("cpu_threads", new_val)
+        self._saved_timer.start()
+
     # ---------------- страница: О программе ----------------
     def _page_about(self):
         page, v = self._page()
@@ -1401,16 +1498,6 @@ class SettingsWindow(QWidget):
         bh.addStretch(1)
         cv.addWidget(btns)
 
-        card_diag, cv_diag = self._card("Диагностика")
-        self.verbose_toggle = ToggleSwitch()
-        cv_diag.addWidget(self._option_row(
-            "Подробный лог (для отладки)",
-            self.verbose_toggle,
-            "В app.log пишется полный текст OCR и переводов без обрезки. "
-            "Включи, если что-то сломалось — пришли log автору. "
-            "Не забудь выключить после отладки."))
-        self.verbose_toggle.toggled.connect(self._on_verbose_toggled)
-
         # 🥚 Пасхалка: карточка благодарности тестировщику
         card_thanks, cv_thanks = self._card("Особая благодарность")
         thanks = QLabel(
@@ -1421,7 +1508,6 @@ class SettingsWindow(QWidget):
         cv_thanks.addWidget(thanks)
 
         v.addWidget(card)
-        v.addWidget(card_diag)
         v.addWidget(card_thanks)
         v.addStretch(1)
         return page
@@ -1460,6 +1546,7 @@ class SettingsWindow(QWidget):
         self.dir_row.setVisible(current_ocr == "rapidocr")
         self._on_setting_changed("src_lang", self.settings.get("src_lang", "en"))
         self._on_setting_changed("dst_lang", self.settings.get("dst_lang", "ru"))
+        self._on_setting_changed("cpu_threads", self.settings.get("cpu_threads", 0))
 
     def _on_setting_changed(self, key, value):
         if key == "font_size":
@@ -1515,6 +1602,17 @@ class SettingsWindow(QWidget):
                 self.combo_dst_lang.blockSignals(True)
                 self.combo_dst_lang.setCurrentIndex(idx)
                 self.combo_dst_lang.blockSignals(False)
+        elif key == "cpu_threads":
+            val = int(value)
+            self.threads_slider.blockSignals(True)
+            self.threads_slider.setValue(val)
+            self._update_threads_display(val)
+            self.threads_slider.blockSignals(False)
+            if val == 0:
+                self.threads_val.setText(f"Авто ({getattr(self, '_auto_threads', 4)})")
+            else:
+                self.threads_val.setText(f"{val} яд.")
+            self.threads_slider.blockSignals(False)
 
     # ---------------- служебное ----------------
     def resizeEvent(self, e):
