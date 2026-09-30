@@ -229,6 +229,17 @@ class OcrWorker(QThread):
         if engine_name == "windows":
             win_tag = get_win_ocr_tag(self._src_lang)
             win_engine = WindowsOcrEngine(default_lang=win_tag)
+            if win_engine.is_available():
+                win_engine.load(lang=win_tag)
+                self._engine = win_engine
+                self._active_engine_name = "windows"
+                self.state_changed.emit("ok", f"Windows OCR: активен ({win_tag})")
+                self.gpu_result.emit(True, False, "Windows OCR работает нативно в ОС")
+                self.engine_changed.emit("windows")
+                print(f"[ocr] Windows OCR успешно инициализирован ({win_tag})")
+                return
+            print("[ocr] Windows OCR недоступен, откат на RapidOCR")
+            engine_name = "rapidocr"
 
         # 1. Нативный Windows OCR
         if engine_name == "windows":

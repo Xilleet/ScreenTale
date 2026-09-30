@@ -210,7 +210,7 @@ class _UpdateBanner(QFrame):
         if percent < 0:
             self.progress_bar.start_indeterminate()
         else:
-            self.progress_bar.set_value(label) # or set_value(percent)
+            self.progress_bar.set_value(percent)
         self.lbl_status.setText(label)
 
     def _on_update(self):

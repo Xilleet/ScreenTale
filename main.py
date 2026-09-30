@@ -139,6 +139,7 @@ class AppController(QObject):
             bool(self.settings.get("gpu", False)),
             preferred_engine=preferred_ocr,
             preferred_direction=preferred_dir,
+            src_lang=self.settings.get("src_lang", "en"),
         )
         self.ocr.state_changed.connect(self.settings_win.ocr_pill.set_state)
         from backend.translators import get_vram_info
@@ -731,7 +732,10 @@ class AppController(QObject):
             self.model_manager.load("qwen", use_gpu=use_gpu, model_filename=value)
         elif key == "src_lang":
             self.ocr.request_language(value)
-        elif key in ("src_lang", "dst_lang", "language_pair"):
+            src = value
+            dst = self.settings.get("dst_lang", "ru")
+            self.trans_win.toolbar.update_lang_badge(src, dst)
+        elif key in ("dst_lang", "language_pair"):
             src = self.settings.get("src_lang", "en")
             dst = self.settings.get("dst_lang", "ru")
             self.trans_win.toolbar.update_lang_badge(src, dst)

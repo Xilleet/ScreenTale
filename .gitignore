@@ -173,3 +173,7 @@ llama/
 Новая папка/frontend/icons/stop_64.png
 Новая папка/frontend/icons/trash_64.png
 data/doctor_report.json
+Новая папка/debug_diagnostics.py
+Новая папка/ScreenTale.ico
+Новая папка/backend/languages.py
+Новая папка/backend/runtime_manager.py
