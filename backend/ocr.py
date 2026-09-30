@@ -57,6 +57,15 @@ def normalize_ocr_text(text: str) -> str:
     - Нормализация кавычек, апострофов и тире к стандартным ASCII-символам.
     - Исправление типовой ошибки OCR O->0 в числах.
     """
+    def _merge_line_breaks(match):
+        # Если вокруг переноса иероглифы (диапазон CJK: \u4e00-\u9fff, кана: \u3040-\u30ff)
+        cjk_pattern = r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]"
+        before = match.string[match.start() - 1] if match.start() > 0 else ""
+        after = match.string[match.end()] if match.end() < len(match.string) else ""
+        if re.match(cjk_pattern, before) and re.match(cjk_pattern, after):
+            return ""
+        return " "
+    
     if not text or not text.strip():
         return ""
 
@@ -210,8 +219,39 @@ class OcrWorker(QThread):
 
     def _do_set_language(self, src_lang: str) -> None:
         self._src_lang = src_lang
-        if self._active_engine_name == "windows" and self._engine is not None:
-            win_tag = get_win_ocr_tag(src_lang)
+        win_tag = get_win_ocr_tag(src_lang)
+
+        # Если юзер предпочитает Windows OCR
+        if self._preferred_engine == "windows":
+            win_engine = WindowsOcrEngine(default_lang=win_tag)
+            ok, _ = win_engine.check_language_support(win_tag)
+            
+            if ok:
+                # Язык поддерживается Windows -> включаем быстрый нативный OCR
+                if self._engine is not None:
+                    self._engine.unload()
+                win_engine.load(lang=win_tag)
+                self._engine = win_engine
+                self._active_engine_name = "windows"
+                self.state_changed.emit("ok", f"Windows OCR: активен ({win_tag})")
+                self.engine_changed.emit("windows")
+                print(f"[ocr] Язык Windows OCR переключен на: {win_tag}")
+                return
+            else:
+                # Пакета нет в Windows -> откат на RapidOCR
+                print(f"[ocr] В Windows нет пакета OCR [{win_tag}] -> авто-переход на RapidOCR!")
+                if self._active_engine_name != "rapidocr":
+                    rapid_engine = RapidOcrEngine(direction=self._preferred_direction)
+                    if rapid_engine.is_available():
+                        rapid_engine.load()
+                        if self._engine is not None:
+                            self._engine.unload()
+                        self._engine = rapid_engine
+                        self._active_engine_name = "rapidocr"
+                        self.state_changed.emit("ok", "RapidOCR: активен (авто-переход)")
+                        self.engine_changed.emit("rapidocr")
+                    return
+
             self._engine.load(lang=win_tag)
             print(f"[ocr] Язык Windows OCR переключен на: {win_tag}")
 
@@ -226,34 +266,24 @@ class OcrWorker(QThread):
         self.state_changed.emit("busy", f"Загрузка {engine_name} OCR…")
         if self._engine is not None:
             self._engine.unload()
+
+        # 1. Нативный Windows OCR
         if engine_name == "windows":
             win_tag = get_win_ocr_tag(self._src_lang)
             win_engine = WindowsOcrEngine(default_lang=win_tag)
             if win_engine.is_available():
-                win_engine.load(lang=win_tag)
-                self._engine = win_engine
-                self._active_engine_name = "windows"
-                self.state_changed.emit("ok", f"Windows OCR: активен ({win_tag})")
-                self.gpu_result.emit(True, False, "Windows OCR работает нативно в ОС")
-                self.engine_changed.emit("windows")
-                print(f"[ocr] Windows OCR успешно инициализирован ({win_tag})")
-                return
-            print("[ocr] Windows OCR недоступен, откат на RapidOCR")
-            engine_name = "rapidocr"
-
-        # 1. Нативный Windows OCR
-        if engine_name == "windows":
-            win_engine = WindowsOcrEngine(default_lang="en")
-            if win_engine.is_available():
-                win_engine.load()
-                self._engine = win_engine
-                self._active_engine_name = "windows"
-                self.state_changed.emit("ok", "Windows OCR: активен")
-                self.gpu_result.emit(True, False, "Windows OCR работает нативно в ОС")
-                self.engine_changed.emit("windows")
-                print("[ocr] Windows OCR успешно инициализирован")
-                return
-            print("[ocr] Windows OCR недоступен, откат на RapidOCR")
+                ok, _ = win_engine.check_language_support(win_tag)
+                if ok:
+                    win_engine.load(lang=win_tag)
+                    self._engine = win_engine
+                    self._active_engine_name = "windows"
+                    self.state_changed.emit("ok", f"Windows OCR: активен ({win_tag})")
+                    self.gpu_result.emit(True, False, "Windows OCR работает нативно в ОС")
+                    self.engine_changed.emit("windows")
+                    print(f"[ocr] Windows OCR успешно инициализирован ({win_tag})")
+                    return
+                else:
+                    print(f"[ocr] Windows OCR: нет пакета [{win_tag}], авто-откат на RapidOCR")
             engine_name = "rapidocr"
 
         # 2. Легковесный RapidOCR (ONNX / Азия / Tategaki)

@@ -644,7 +644,7 @@ class TranslateWindow(QWidget):
         # Инициализируем бейдж текущими языками
         src = self.settings.get("src_lang", "en")
         dst = self.settings.get("dst_lang", "ru")
-        
+
         self.toolbar.update_lang_badge(src, dst)
         self.toolbar.retry_clicked.connect(self.retry_requested.emit)
         self.toolbar.pause_clicked.connect(self.pause_requested.emit)
@@ -935,11 +935,13 @@ class TranslateWindow(QWidget):
             excess = doc.blockCount() - MAX_HISTORY_LINES
             if excess > 0:
                 cursor = QTextCursor(doc)
+                cursor.beginEditBlock()  # <-- Группируем удаление в один кадр!
                 cursor.movePosition(QTextCursor.MoveOperation.Start)
                 for _ in range(excess):
                     cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
                     cursor.removeSelectedText()
                     cursor.deleteChar()
+                cursor.endEditBlock()
         except Exception as _e:
             print(f"[warn] _cleanup_history: {_e}")
 

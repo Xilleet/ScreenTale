@@ -19,6 +19,7 @@ from PySide6.QtCore import (
     QDir,
     QLockFile,
     QObject,
+    QPoint,
     QRect,
     QRunnable,
     Qt,
@@ -436,7 +437,11 @@ class AppController(QObject):
         needed_v = win_h + SHADOW_MARGIN * 2 + GAP
         needed_h = win_w + SHADOW_MARGIN * 2 + GAP
 
-        screen = QApplication.primaryScreen()
+        # ФИКС: определяем конкретный монитор под рамкой, а не слепо primaryScreen()
+        cx = int((left + right) / 2)
+        cy = int((top + bottom) / 2)
+        screen = QApplication.screenAt(QPoint(cx, cy)) or QApplication.primaryScreen()
+
         if screen is not None:
             avail = screen.availableGeometry()
             screen_left, screen_top = avail.left(), avail.top()
@@ -532,6 +537,17 @@ class AppController(QObject):
         if not text.strip():
             return
 
+        # Получаем выбранную языковую пару из настроек
+        src_lang = self.settings.get("src_lang", "en")
+        dst_lang = self.settings.get("dst_lang", "ru")
+
+        #  ЗАЩИТА: если исходный и целевой языки совпадают (например, RU -> RU)
+        if src_lang == dst_lang:
+            print(f"[ctrl] Исходный и целевой язык совпадают ({src_lang.upper()}) -> мгновенный вывод оригинала")
+            self._req_seq += 1
+            self._apply_translation_result(self._req_seq, text)
+            return
+
         # Защита от перегрузки очереди (Backpressure, до 3 реплик)
         MAX_PENDING = 3
         untranslated = [s for s, data in self._pending_translations.items() if data[3] is None]
@@ -543,10 +559,6 @@ class AppController(QObject):
         self._req_seq += 1
         seq = self._req_seq
         engine = self.settings.get("translator", "google")
-        
-        # Получаем выбранную языковую пару из настроек
-        src_lang = self.settings.get("src_lang", "en")
-        dst_lang = self.settings.get("dst_lang", "ru")
 
         print(f"[ctrl] запрос перевода ({src_lang.upper()} -> {dst_lang.upper()}): движок={engine}, seq={seq}")
         self._pending_translations[seq] = [
@@ -639,7 +651,9 @@ class AppController(QObject):
         if self._fallback_active or not is_network_error(error):
             return
 
-        available_engine = get_available_offline_engine(preferred="opus")
+        available_engine = get_available_offline_engine(src_lang=self.settings.get("src_lang", "en"), 
+                                                dst_lang=self.settings.get("dst_lang", "ru"), 
+                                                preferred="opus")
         if available_engine is None:
             self._apply_translation_result(
                 seq, "[Интернет недоступен, а офлайн-модель не скачана. Скачайте её в Настройках]")

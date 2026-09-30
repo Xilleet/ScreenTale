@@ -6,6 +6,7 @@
 """
 import gc
 import os
+import threading
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -83,6 +84,7 @@ class WindowsOcrEngine(BaseOcrEngine):
     def __init__(self, default_lang: str = "en"):
         self.lang = default_lang
         self._is_ready = False
+        self._lock = threading.Lock()
 
     def is_available(self) -> bool:
         return HAS_WINOCR or HAS_WINRT
@@ -122,27 +124,31 @@ class WindowsOcrEngine(BaseOcrEngine):
             return False, f"Ошибка проверки языка Windows OCR: {e}"
 
     def load(self, use_gpu: bool = False, lang: str = "en") -> bool:
-        self.lang = lang
-        ok, msg = self.check_language_support(self.lang)
-        if not ok:
-            print(f"[windows_ocr] ПРЕДУПРЕЖДЕНИЕ:\n{msg}")
-        self._is_ready = True
-        return True
+        with self._lock:
+            self.lang = lang
+            ok, msg = self.check_language_support(self.lang)
+            if not ok:
+                print(f"[windows_ocr] ПРЕДУПРЕЖДЕНИЕ:\n{msg}")
+                self._is_ready = False
+                return False
+            self._is_ready = True
+            return True
 
     def read(self, img: Image.Image) -> str:
         if not self._is_ready:
-            return ""
+            return f"[В Windows не установлен пакет OCR для {self.lang}]"
         if not HAS_WINOCR or winocr is None:
             return "[Ошибка: winocr не установлен]"
 
-        lang_tag = self.lang
-        try:
-            result = winocr.recognize_pil_sync(img, lang=lang_tag)
-            text = result.get("text", "") if isinstance(result, dict) else str(result)
-            return text.strip()
-        except Exception as e:
-            vlog(f"[windows_ocr] сбой чтения: {e}")
-            raise
+        with self._lock:
+            lang_tag = self.lang
+            try:
+                result = winocr.recognize_pil_sync(img, lang=lang_tag)
+                text = result.get("text", "") if isinstance(result, dict) else str(result)
+                return text.strip()
+            except Exception as e:
+                vlog(f"[windows_ocr] сбой чтения: {e}")
+                return f"[Ошибка Windows OCR ({lang_tag}): {e}]"
 
     def unload(self) -> None:
         self._is_ready = False

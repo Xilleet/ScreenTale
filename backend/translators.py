@@ -188,15 +188,23 @@ def clear_all_cache() -> bool:
     return False
 
 
-def get_available_offline_engine(preferred: str = "opus") -> str | None:
-    """Умный выбор офлайн-модели: возвращает preferred, если она скачана, или любую доступную."""
-    is_pref, _ = is_model_cached(preferred)
-    if is_pref:
-        return preferred
-    for eng in LOCAL_ENGINES:
+def get_available_offline_engine(src_lang: str = "en", dst_lang: str = "ru", preferred: str = "opus") -> str | None:
+    """Умный выбор офлайн-модели с учетом поддерживаемых языков."""
+    is_en_ru = (src_lang == "en" and dst_lang == "ru")
+
+    # 1. Если направление EN -> RU, проверяем preferred (Opus)
+    if is_en_ru:
+        is_pref, _ = is_model_cached(preferred)
+        if is_pref:
+            return preferred
+
+    # 2. Если другие языки (JA, ZH и др.) — Opus бесполезен, ищем Qwen/Sakura или NLLB
+    engines_to_check = (ENGINE_QWEN, ENGINE_NLLB) if not is_en_ru else LOCAL_ENGINES
+    for eng in engines_to_check:
         is_c, _ = is_model_cached(eng)
         if is_c:
             return eng
+
     return None
 
 def is_network_error(text: str) -> bool:
