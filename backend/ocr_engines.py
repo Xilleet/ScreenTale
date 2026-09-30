@@ -36,6 +36,9 @@ WinrtOcrEngine = getattr(winocr, "OcrEngine", None)
 Language = getattr(winocr, "Language", None)
 HAS_WINRT = WinrtOcrEngine is not None and Language is not None
 
+# Глобальный мьютекс для безопасной работы с WinRT COM из любых потоков
+_winrt_lock = threading.Lock()
+_lang_support_cache: dict[str, bool] = {}
 
 class BaseOcrEngine(ABC):
     """Абстрактный интерфейс OCR-движка."""
@@ -71,7 +74,6 @@ class BaseOcrEngine(ABC):
         """Проверить, поддерживается ли язык. Возвращает (ok, сообщение_с_инструкцией)."""
         return True, ""
 
-
 # =====================================================================
 # 1. Windows Native OCR (WinRT API)
 # =====================================================================
@@ -84,47 +86,54 @@ class WindowsOcrEngine(BaseOcrEngine):
     def __init__(self, default_lang: str = "en"):
         self.lang = default_lang
         self._is_ready = False
-        self._lock = threading.Lock()
 
     def is_available(self) -> bool:
         return HAS_WINOCR or HAS_WINRT
 
     def get_installed_languages(self) -> list[str]:
-        """Возвращает список языковых тегов OCR, установленных в Windows (например, ['en-US', 'ja-JP'])."""
         if not HAS_WINRT or WinrtOcrEngine is None:
             return ["en-US"]
-        try:
-            langs = WinrtOcrEngine.available_recognizer_languages
-            return [l.language_tag for l in langs]
-        except Exception as e:
-            vlog(f"[windows_ocr] ошибка получения языков: {e}")
-            return []
+        with _winrt_lock:
+            try:
+                langs = WinrtOcrEngine.available_recognizer_languages
+                return [l.language_tag for l in langs]
+            except Exception as e:
+                vlog(f"[windows_ocr] ошибка получения языков: {e}")
+                return []
 
     def check_language_support(self, lang: str) -> tuple[bool, str]:
-        """Проверяет наличие системного языкового пакета OCR.
-
-        Если язык не установлен, возвращает команду PowerShell для его добавления.
-        """
+        """Проверяет наличие системного языкового пакета OCR с кэшированием."""
         if not HAS_WINRT or WinrtOcrEngine is None or Language is None:
             return True, ""
-        try:
-            tag = lang if "-" in lang else ("ja-JP" if lang == "ja" else "en-US")
-            win_lang = Language(tag)
-            supported = WinrtOcrEngine.is_language_supported(win_lang)
-            if not supported:
-                cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
-                msg = (
-                    f"В Windows не установлен языковой пакет OCR для [{tag}].\n"
-                    "Установите его в: Параметры Windows -> Время и язык -> Язык,\n"
-                    f"либо выполните в PowerShell от админа:\n{cmd}"
-                )
-                return False, msg
-            return True, ""
-        except Exception as e:
-            return False, f"Ошибка проверки языка Windows OCR: {e}"
+
+        tag = lang if "-" in lang else ("ja-JP" if lang == "ja" else "en-US")
+        
+        # 1. Быстрый ответ из кэша (без дергания WinRT COM)
+        if tag in _lang_support_cache:
+            if _lang_support_cache[tag]:
+                return True, ""
+            cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
+            return False, f"В Windows не установлен пакет OCR для [{tag}].\nКоманда: {cmd}"
+
+        with _winrt_lock:
+            try:
+                win_lang = Language(tag)
+                supported = WinrtOcrEngine.is_language_supported(win_lang)
+                _lang_support_cache[tag] = bool(supported)
+                if not supported:
+                    cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
+                    msg = (
+                        f"В Windows не установлен языковой пакет OCR для [{tag}].\n"
+                        "Установите его в: Параметры Windows -> Время и язык -> Язык,\n"
+                        f"либо выполните в PowerShell от админа:\n{cmd}"
+                    )
+                    return False, msg
+                return True, ""
+            except Exception as e:
+                return False, f"Ошибка проверки языка Windows OCR: {e}"
 
     def load(self, use_gpu: bool = False, lang: str = "en") -> bool:
-        with self._lock:
+        with _winrt_lock:
             self.lang = lang
             ok, msg = self.check_language_support(self.lang)
             if not ok:
@@ -140,7 +149,8 @@ class WindowsOcrEngine(BaseOcrEngine):
         if not HAS_WINOCR or winocr is None:
             return "[Ошибка: winocr не установлен]"
 
-        with self._lock:
+        # Обязательно под мьютексом для защиты от нативного краша WinRT COM!
+        with _winrt_lock:
             lang_tag = self.lang
             try:
                 result = winocr.recognize_pil_sync(img, lang=lang_tag)
@@ -148,10 +158,12 @@ class WindowsOcrEngine(BaseOcrEngine):
                 return text.strip()
             except Exception as e:
                 vlog(f"[windows_ocr] сбой чтения: {e}")
+                # Мягкий перехват вместо падения
                 return f"[Ошибка Windows OCR ({lang_tag}): {e}]"
 
     def unload(self) -> None:
-        self._is_ready = False
+        with _winrt_lock:
+            self._is_ready = False
 
 
 # =====================================================================
@@ -177,6 +189,15 @@ class EasyOcrEngine(BaseOcrEngine):
             return False
 
     def load(self, use_gpu: bool = False, lang: str = "en") -> bool:
+        with _winrt_lock:
+            self.lang = lang
+            ok, msg = self.check_language_support(self.lang)
+            if not ok:
+                print(f"[windows_ocr] ПРЕДУПРЕЖДЕНИЕ:\n{msg}")
+                self._is_ready = False
+                return False
+            self._is_ready = True
+            return True
         import easyocr
         import torch
         self._easyocr = easyocr
@@ -201,6 +222,8 @@ class EasyOcrEngine(BaseOcrEngine):
         return " ".join(results).strip()
 
     def unload(self) -> None:
+        with _winrt_lock:
+            self._is_ready = False
         if self._reader is not None:
             self._reader = None
             gc.collect()

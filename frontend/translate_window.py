@@ -10,6 +10,7 @@ from PySide6.QtGui import (
     QFont,
     QIcon,
     QPainter,
+    QPen,
     QTextCharFormat,
     QTextCursor,
 )
@@ -654,6 +655,7 @@ class TranslateWindow(QWidget):
 
         
         self._font_size = int(settings.get("font_size", 14))
+        self._text_outline = bool(settings.get("text_outline", False))
 
         settings.changed.connect(self._on_setting_changed)
         self.update_font_size(int(settings.get("font_size", 14)))
@@ -729,6 +731,9 @@ class TranslateWindow(QWidget):
     def _on_setting_changed(self, key, value):
         if key == "font_size":
             self.update_font_size(int(value))
+        elif key == "text_outline":
+            self._text_outline = bool(value)
+            self.update_font_size(self._font_size)
         elif key == "opacity":
             self.update_opacity(float(value))
 
@@ -760,11 +765,18 @@ class TranslateWindow(QWidget):
             """
         )
 
-        # 4. Обновляем ВСЕ уже напечатанные строки в документе (выделяем всё и ставим размер)
+        # 4. Обновляем ВСЕ уже напечатанные строки в документе
         cursor = QTextCursor(doc)
         cursor.select(QTextCursor.SelectionType.Document)
         fmt = QTextCharFormat()
         fmt.setFont(self._current_font)
+        
+        # Накладываем или снимаем контур
+        if getattr(self, "_text_outline", False):
+            fmt.setTextOutline(QPen(QColor(0, 0, 0, 230), 1.0))
+        else:
+            fmt.setTextOutline(QPen(Qt.PenStyle.NoPen))
+            
         cursor.mergeCharFormat(fmt)
 
     def update_opacity(self, value):
@@ -892,6 +904,8 @@ class TranslateWindow(QWidget):
         if not hasattr(self, "_current_font"):
             self._current_font = QFont("Segoe UI", getattr(self, "_font_size", 14))
 
+        has_outline = getattr(self, "_text_outline", False)
+
         # 2. Выделяем таймштамп янтарным акцентом, а саму реплику — цветом пергамента
         match = re.match(r"^(\(\d{2}:\d{2}:\d{2}\))\s*(.*)$", text, re.DOTALL)
         if match:
@@ -900,6 +914,8 @@ class TranslateWindow(QWidget):
             fmt_time = QTextCharFormat()
             fmt_time.setFont(self._current_font)            
             fmt_time.setForeground(QColor("#e08e45"))
+            if has_outline:
+                fmt_time.setTextOutline(QPen(QColor(0, 0, 0, 200), 0.8))
             cursor.setCharFormat(fmt_time)                  
             cursor.insertText(time_str + " ")
 
@@ -907,12 +923,16 @@ class TranslateWindow(QWidget):
             fmt_body = QTextCharFormat()
             fmt_body.setFont(self._current_font)            
             fmt_body.setForeground(QColor("#f2ede4"))
+            if has_outline:
+                fmt_body.setTextOutline(QPen(QColor(0, 0, 0, 230), 1.0))
             cursor.setCharFormat(fmt_body)                  
             cursor.insertText(body_str)
         else:
             fmt = QTextCharFormat()
             fmt.setFont(self._current_font)                
             fmt.setForeground(QColor("#f2ede4"))
+            if has_outline:
+                fmt.setTextOutline(QPen(QColor(0, 0, 0, 230), 1.0))
             cursor.setCharFormat(fmt)                      
             cursor.insertText(text)
 

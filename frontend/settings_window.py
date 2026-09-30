@@ -2,7 +2,7 @@ import os
 import sys
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal, qVersion
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -24,8 +24,9 @@ from PySide6.QtWidgets import (
 
 from backend.config import APP_VERSION, get_app_dir
 from backend.hotkeys import HotkeyManager
-from backend.languages import LANGUAGES
+from backend.languages import LANGUAGES, get_lang_name, get_win_ocr_tag
 from backend.logging_setup import set_verbose
+from backend.ocr_engines import WindowsOcrEngine
 from backend.runtime_manager import (
     BACKENDS_CONFIG,
     detect_best_backend,
@@ -387,6 +388,51 @@ class SettingsWindow(QWidget):
         v.addWidget(btn_exit)
         return frame
 
+    def _open_windows_language_settings(self):
+        """Открывает окно 'Язык и регион' в параметрах Windows 10/11."""
+        try:
+            os.startfile("ms-settings:regionlanguage")
+        except Exception as e:
+            self.toast.show_toast(f"Не удалось открыть параметры: {e}")
+
+    def _copy_powershell_ocr_cmd(self):
+        """Копирует команду PowerShell для установки пакета в буфер обмена."""
+        src_lang = self.settings.get("src_lang", "en")
+        tag = get_win_ocr_tag(src_lang)
+        cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
+        QApplication.instance().clipboard().setText(cmd)
+        self.toast.show_toast("Команда скопирована! Запустите PowerShell от админа и вставьте (Ctrl+V).", ms=3500)
+
+    def _update_ocr_lang_warning(self):
+        """Проверяет наличие системного пакета Windows OCR и обновляет плашку."""
+        engine = self.settings.get("ocr_engine", "windows")
+        src_lang = self.settings.get("src_lang", "en")
+
+        if engine != "windows":
+            self.ocr_lang_warn_frame.hide()
+            return
+
+        tag = get_win_ocr_tag(src_lang)
+        win_eng = WindowsOcrEngine(default_lang=tag)
+        ok, _ = win_eng.check_language_support(tag)
+
+        if not ok:
+            lang_name = get_lang_name(src_lang)
+            
+            if src_lang in ("ja", "zh"):
+                fallback_note = "Сейчас сканирование временно выполняет встроенный RapidOCR (Азия / Манга).\n"
+            else:
+                fallback_note = "Без пакета распознавание текста на этом языке может работать некорректно.\n"
+
+            self.lbl_ocr_warn_title.setText(f"⚠️ Пакет Windows OCR не найден: [{lang_name} ({tag})]")
+            self.lbl_ocr_warn_text.setText(
+                f"{fallback_note}"
+                f"Установите компонент распознавания в Windows для быстрого чтения:"
+            )
+            self.ocr_lang_warn_frame.show()
+        else:
+            self.ocr_lang_warn_frame.hide()
+
     def _build_content(self):
         self.pages = QStackedWidget()
         self.pages.addWidget(self._wrap(self._page_general()))
@@ -611,6 +657,13 @@ class SettingsWindow(QWidget):
         pv.addWidget(self.preview_label)
         cv.addWidget(self.preview_frame)
 
+        self.outline_toggle = ToggleSwitch()
+        cv.addWidget(self._option_row(
+            "Контрастная обводка текста",
+            self.outline_toggle,
+            "Тонкий темный контур букв для 100% читаемости на снегу и ярком фоне игры при высокой прозрачности."
+        ))
+
         orow = QWidget()
         orow.setObjectName("Row")
         oh = QHBoxLayout(orow)
@@ -643,6 +696,7 @@ class SettingsWindow(QWidget):
         self.font_slider.valueChanged.connect(self._on_font_slider)
         self.opacity_slider.valueChanged.connect(self._on_opacity_slider)
         self.autocopy_toggle.toggled.connect(self._on_autocopy)
+        self.outline_toggle.toggled.connect(self._on_outline_toggled)
         return page
 
     def _on_theme_changed(self, ident):
@@ -687,16 +741,16 @@ class SettingsWindow(QWidget):
             self._saved_timer.start()
 
 # ---------------- страница: Перевод ----------------
+
     def _page_translation(self):
         page, v = self._page()
 
         # ========================================================
-        # Карточка Языковая пара (Any-to-Any)
+        # Карточка 0: Языковая пара (Any-to-Any)
         # ========================================================
-
         card_lang, c_lang = self._card("Языковая пара")
 
-        # ДОБАВЛЕНО: Подсказка о блокировке для Opus-MT
+        # Подсказка о блокировке для Opus-MT
         self.lbl_lang_lock_hint = QLabel("🔒 Opus-MT поддерживает только перевод с английского на русский (EN ➔ RU)")
         self.lbl_lang_lock_hint.setObjectName("Hint")
         self.lbl_lang_lock_hint.setStyleSheet("color: #e08e45; font-size: 11px;")
@@ -720,16 +774,14 @@ class SettingsWindow(QWidget):
         self.combo_src_lang.setMinimumWidth(180)
         self.combo_src_lang.setMaxVisibleItems(14)
 
-        # ФИКС МЕРЦАНИЯ И ПРОСВЕЧИВАНИЯ:
+        # ФИКС МЕРЦАНИЯ И ПРОСВЕЧИВАНИЯ
         src_view = QListView()
         src_view.setUniformItemSizes(True)
         self.combo_src_lang.setView(src_view)
-        # Отключаем системную виндовую анимацию плавного выкатывания (убирает артефакт просвечивания)
         if self.combo_src_lang.view().window():
             self.combo_src_lang.view().window().setWindowFlags(
                 Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
             )
-
         self.combo_src_lang.wheelEvent = lambda event: event.ignore()
         v_src.addWidget(lbl_src)
         v_src.addWidget(self.combo_src_lang)
@@ -752,7 +804,7 @@ class SettingsWindow(QWidget):
         self.combo_dst_lang.setMinimumWidth(180)
         self.combo_dst_lang.setMaxVisibleItems(14)
 
-        # ФИКС МЕРЦАНИЯ И ПРОСВЕЧИВАНИЯ:
+        # ФИКС МЕРЦАНИЯ И ПРОСВЕЧИВАНИЯ
         dst_view = QListView()
         dst_view.setUniformItemSizes(True)
         self.combo_dst_lang.setView(dst_view)
@@ -773,8 +825,84 @@ class SettingsWindow(QWidget):
         p_lay.addLayout(v_src, 1)
         p_lay.addWidget(self.btn_swap_langs, 0, Qt.AlignmentFlag.AlignBottom)
         p_lay.addLayout(v_dst, 1)
-
         c_lang.addWidget(pair_row)
+
+        # ========================================================
+        # Баннер отсутствия языкового пакета Windows OCR (Внутри карточки языков)
+        # ========================================================
+        self.ocr_lang_warn_frame = QFrame()
+        self.ocr_lang_warn_frame.setObjectName("OcrWarnFrame")
+        self.ocr_lang_warn_frame.setStyleSheet("""
+            QFrame#OcrWarnFrame {
+                background-color: #24201c;
+                border: 1px solid #e08e45;
+                border-radius: 9px;
+            }
+            QPushButton#OcrPrimaryBtn {
+                background-color: #e08e45;
+                color: #1a1816;
+                font-weight: 600;
+                font-size: 12px;
+                border: none;
+                border-radius: 6px;
+                padding: 6px 14px;
+            }
+            QPushButton#OcrPrimaryBtn:hover {
+                background-color: #f59e0b;
+            }
+            QPushButton#OcrSecondaryBtn {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 6px;
+                color: #f2ede4;
+                font-size: 12px;
+                padding: 6px 12px;
+            }
+            QPushButton#OcrSecondaryBtn:hover {
+                background: rgba(224, 142, 69, 0.15);
+                border-color: #e08e45;
+            }
+        """)
+
+        warn_v = QVBoxLayout(self.ocr_lang_warn_frame)
+        warn_v.setContentsMargins(14, 12, 14, 12)
+        warn_v.setSpacing(6)
+
+        # 1. Заголовок предупреждения
+        self.lbl_ocr_warn_title = QLabel("⚠️ Пакет Windows OCR не установлен")
+        self.lbl_ocr_warn_title.setStyleSheet("font-weight: 600; color: #e08e45; font-size: 13px;")
+        warn_v.addWidget(self.lbl_ocr_warn_title)
+
+        # 2. Описание проблемы
+        self.lbl_ocr_warn_text = QLabel()
+        self.lbl_ocr_warn_text.setObjectName("Hint")
+        self.lbl_ocr_warn_text.setWordWrap(True)
+        self.lbl_ocr_warn_text.setStyleSheet("color: #d6cfc7; font-size: 12px; line-height: 1.4;")
+        warn_v.addWidget(self.lbl_ocr_warn_text)
+
+        # 3. Кнопки действий
+        warn_btn_row = QHBoxLayout()
+        warn_btn_row.setContentsMargins(0, 4, 0, 0)
+        warn_btn_row.setSpacing(8)
+
+        btn_open_win_settings = QPushButton("Открыть параметры Windows")
+        btn_open_win_settings.setObjectName("OcrPrimaryBtn")
+        btn_open_win_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_open_win_settings.clicked.connect(self._open_windows_language_settings)
+
+        btn_copy_ps_cmd = QPushButton("Скопировать команду PowerShell")
+        btn_copy_ps_cmd.setObjectName("OcrSecondaryBtn")
+        btn_copy_ps_cmd.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_copy_ps_cmd.clicked.connect(self._copy_powershell_ocr_cmd)
+
+        warn_btn_row.addWidget(btn_open_win_settings)
+        warn_btn_row.addWidget(btn_copy_ps_cmd)
+        warn_btn_row.addStretch(1)
+        warn_v.addLayout(warn_btn_row)
+
+        self.ocr_lang_warn_frame.hide()
+        c_lang.addWidget(self.ocr_lang_warn_frame)
+
         v.addWidget(card_lang)
 
         self.combo_src_lang.currentIndexChanged.connect(self._on_lang_combo_changed)
@@ -793,7 +921,6 @@ class SettingsWindow(QWidget):
         cv.addWidget(self.translator_hint)
 
         # Виджет монитора VRAM (над комбобоксом и под описанием движка)
-
         self.vram_widget = QWidget()
         self.vram_widget.setObjectName("Row")
         vram_lay = QVBoxLayout(self.vram_widget)
@@ -815,9 +942,9 @@ class SettingsWindow(QWidget):
         vram_lay.addWidget(self.vram_bar)
         cv.addWidget(self.vram_widget)
 
-        # Таймер опроса VRAM каждые 2 секунды (работает ТОЛЬКО при открытых настройках)
+        # Таймер опроса VRAM каждые 3 секунды (работает ТОЛЬКО при открытых настройках)
         self._vram_timer = QTimer(self)
-        self._vram_timer.setInterval(2000)
+        self._vram_timer.setInterval(3000)
         self._vram_timer.timeout.connect(self._update_vram_monitor)
 
         # 1. Управление моделями Opus / NLLB (Статус + Кнопки)
@@ -867,7 +994,7 @@ class SettingsWindow(QWidget):
         self.runtime_pill = StatusPill()
         r_lay.addWidget(self.runtime_pill, 1)
 
-        self.btn_install_runtime = QPushButton("Установить движок")
+        self.btn_install_runtime = QPushButton("Установить движок для LLM")
         self.btn_install_runtime.setObjectName("Ghost")
         self.btn_install_runtime.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_install_runtime.clicked.connect(self._show_runtime_menu)
@@ -909,7 +1036,7 @@ class SettingsWindow(QWidget):
         gh.addWidget(self.btn_open_models_dir)
         cv.addWidget(self.gguf_select_row)
 
-        # 3. ВОТ ЭТОТ БЛОК: Каталог проверенных GGUF-моделей
+        # 3. Каталог проверенных GGUF-моделей
         self.catalog_frame = QFrame()
         self.catalog_frame.setObjectName("Card")
         cat_v = QVBoxLayout(self.catalog_frame)
@@ -1160,6 +1287,7 @@ class SettingsWindow(QWidget):
         self.settings.set("ocr_engine", ident)
         # Показываем Tategaki только для RapidOCR:
         self.dir_row.setVisible(ident == "rapidocr")
+        self._update_ocr_lang_warning()
         self._saved_timer.start()
 
     def _on_dir_changed(self, ident):
@@ -1547,6 +1675,23 @@ class SettingsWindow(QWidget):
             f"PySide6: {pyside_ver}\nQt: {qVersion()}")
         self.toast.show_toast("Скопировано в буфер обмена")
 
+    def _on_outline_toggled(self, checked):
+        self.settings.set("text_outline", bool(checked))
+        self._update_preview_outline(bool(checked))
+        self._saved_timer.start()
+
+    def _update_preview_outline(self, enabled: bool):
+        """Интерактивно обновляет контур в блоке Preview настроек."""
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        if enabled:
+            shadow = QGraphicsDropShadowEffect(self.preview_label)
+            shadow.setBlurRadius(3)
+            shadow.setColor(QColor(0, 0, 0, 240))
+            shadow.setOffset(0, 0)
+            self.preview_label.setGraphicsEffect(shadow)
+        else:
+            self.preview_label.setGraphicsEffect(None)
+
 # ---------------- реакция на settings.changed ----------------
     def _sync_from_settings(self):
         self.theme_seg.set_value(self.settings.get("theme", "dark"))
@@ -1575,6 +1720,8 @@ class SettingsWindow(QWidget):
         self._on_setting_changed("dst_lang", self.settings.get("dst_lang", "ru"))
         self._on_setting_changed("cpu_threads", self.settings.get("cpu_threads", 0))
         self._update_lang_lock_state()
+        self._update_ocr_lang_warning()
+        self._on_setting_changed("text_outline", self.settings.get("text_outline", False))
 
     def _on_setting_changed(self, key, value):
         if key == "font_size":
@@ -1613,12 +1760,14 @@ class SettingsWindow(QWidget):
             self.auto_delay_val.setText(f"{val} мс")
             self.auto_delay_slider.blockSignals(False)
         elif key == "ocr_engine":
+            self._update_ocr_lang_warning()
             self.ocr_seg.set_value(value)
             self.ocr_hint.setText(OCR_HINTS.get(value, ""))
             self.dir_row.setVisible(value == "rapidocr")
         elif key == "ocr_direction":
             self.dir_seg.set_value(value)
         elif key == "src_lang":
+            self._update_ocr_lang_warning()
             idx = self.combo_src_lang.findData(value)
             if idx >= 0:
                 self.combo_src_lang.blockSignals(True)
@@ -1641,6 +1790,11 @@ class SettingsWindow(QWidget):
             else:
                 self.threads_val.setText(f"{val} яд.")
             self.threads_slider.blockSignals(False)
+        elif key == "text_outline":
+            self.outline_toggle.blockSignals(True)
+            self.outline_toggle.setChecked(bool(value))
+            self.outline_toggle.blockSignals(False)
+            self._update_preview_outline(bool(value))
 
     # ---------------- служебное ----------------
     def resizeEvent(self, e):

@@ -66,6 +66,8 @@ from frontend.translate_window import TranslateWindow
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 _local_hf = os.path.join(get_data_dir(), "hf_cache")
 os.environ["HF_HOME"] = _local_hf
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "4")
 os.makedirs(_local_hf, exist_ok=True)
 
 

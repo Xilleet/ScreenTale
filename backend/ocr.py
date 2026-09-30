@@ -181,17 +181,7 @@ class OcrWorker(QThread):
 
     # ---------- внутренности (поток воркера) ----------
     def run(self) -> None:
-        # Проверяем доступность CUDA для настроек
-        cuda_available = False
-        try:
-            import torch
-
-            cuda_available = bool(torch.cuda.is_available())
-        except Exception:
-            pass
-        self.cuda_status.emit(cuda_available)
-
-        # Выбираем и загружаем начальный движок
+        # Выбираем и загружаем начальный движок (без тяжелого фонового импорта torch)
         self._init_engine(self._preferred_engine, self._requested_gpu)
 
         while not self._stop_flag:
@@ -215,7 +205,7 @@ class OcrWorker(QThread):
                 self._do_set_language(task[1])
 
         if self._engine is not None:
-            self._engine.unload()
+            self._engine.unload()   
 
     def _do_set_language(self, src_lang: str) -> None:
         self._src_lang = src_lang

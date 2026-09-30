@@ -31,6 +31,7 @@ DEFAULTS = {
     "font_size": 14,
     "theme": "dark",     
     "opacity": 0.95, 
+    "text_outline": False,
     "src_lang": "en", # Исходный язык текста на экране
     "dst_lang": "ru", # Целевой язык перевода
     "recent_pairs": [["en", "ru"], ["ja", "ru"], ["zh", "ru"], ["ko", "ru"]],
@@ -147,7 +148,8 @@ class SettingsManager(QObject):
 
         for key in ("theme", "font_size", "opacity", "gpu", "auto_copy",
                     "auto_delay_ms", "verbose_log", "ocr_engine", "ocr_direction",
-                    "welcome_completed", "selected_gguf", "src_lang", "dst_lang", "recent_pairs", "cpu_threads"):
+                    "welcome_completed", "selected_gguf", "src_lang", "dst_lang", 
+                    "recent_pairs", "cpu_threads", "text_outline"):
             if key in data:
                 self._values[key] = data[key]
 
