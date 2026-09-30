@@ -441,6 +441,24 @@ class SettingsWindow(QWidget):
                 self.settings.set_language_pair(src, dst)
                 self._saved_timer.start()
 
+    def _update_lang_lock_state(self):
+        """Блокирует или разблокирует выбор языков в зависимости от выбранного движка."""
+        engine = self.settings.get("translator", "google")
+        is_opus = (engine == "opus")
+
+        if is_opus:
+            # Принудительно выставляем EN -> RU
+            self.settings.set_language_pair("en", "ru")
+            self.combo_src_lang.setEnabled(False)
+            self.combo_dst_lang.setEnabled(False)
+            self.btn_swap_langs.setEnabled(False)
+            self.lbl_lang_lock_hint.show()
+        else:
+            self.combo_src_lang.setEnabled(True)
+            self.combo_dst_lang.setEnabled(True)
+            self.btn_swap_langs.setEnabled(True)
+            self.lbl_lang_lock_hint.hide()
+
     def _on_swap_langs_clicked(self):
         src = self.combo_src_lang.currentData()
         dst = self.combo_dst_lang.currentData()
@@ -677,6 +695,14 @@ class SettingsWindow(QWidget):
         # ========================================================
 
         card_lang, c_lang = self._card("Языковая пара")
+
+        # ДОБАВЛЕНО: Подсказка о блокировке для Opus-MT
+        self.lbl_lang_lock_hint = QLabel("🔒 Opus-MT поддерживает только перевод с английского на русский (EN ➔ RU)")
+        self.lbl_lang_lock_hint.setObjectName("Hint")
+        self.lbl_lang_lock_hint.setStyleSheet("color: #e08e45; font-size: 11px;")
+        self.lbl_lang_lock_hint.setWordWrap(True)
+        self.lbl_lang_lock_hint.hide()  # По умолчанию скрыта
+        c_lang.addWidget(self.lbl_lang_lock_hint)
 
         pair_row = QWidget()
         pair_row.setObjectName("Row")
@@ -1124,6 +1150,7 @@ class SettingsWindow(QWidget):
     def _on_translator_changed(self, ident):
         self.translator_hint.setText(TRANSLATOR_HINTS.get(ident, ""))
         self.settings.set("translator", ident)
+        self._update_lang_lock_state()
         self._saved_timer.start()
         # TODO(этап 2): контроллер подписан на settings.changed('translator')
         # и в QThread загрузит/выгрузит локальную модель (с прогрессом в gpu_bar).
@@ -1547,6 +1574,7 @@ class SettingsWindow(QWidget):
         self._on_setting_changed("src_lang", self.settings.get("src_lang", "en"))
         self._on_setting_changed("dst_lang", self.settings.get("dst_lang", "ru"))
         self._on_setting_changed("cpu_threads", self.settings.get("cpu_threads", 0))
+        self._update_lang_lock_state()
 
     def _on_setting_changed(self, key, value):
         if key == "font_size":

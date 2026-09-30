@@ -59,7 +59,8 @@ class AutoModeWorker(QThread):
 
     def _grab(self):
         left, top, right, bottom = self._bbox
-        scale = get_screen_scale()
+        # ПЕРЕДАЕМ self._bbox: правильный масштаб для авто-режима на любом мониторе
+        scale = get_screen_scale(self._bbox)
         physical = (int(left * scale), int(top * scale),
                     int(right * scale), int(bottom * scale))
         return np.array(ImageGrab.grab(bbox=physical))

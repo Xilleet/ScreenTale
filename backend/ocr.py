@@ -3,13 +3,13 @@
 Поддерживает стратегии распознавания (Windows OCR / EasyOCR)
 и выполняет захват и обработку экрана без блокировки интерфейса.
 """
-import ctypes
 import queue
 import re
 import time
 
 from PIL import Image, ImageGrab
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QPoint, QThread, Signal
+from PySide6.QtWidgets import QApplication
 
 from backend.languages import get_win_ocr_tag
 from backend.logging_setup import vlog
@@ -21,12 +21,33 @@ from backend.ocr_engines import (
 )
 
 
-def get_screen_scale() -> float:
-    """Масштаб экрана: логические -> физические пиксели."""
+def get_screen_scale(bbox: tuple | None = None) -> float:
+    """Возвращает точный масштаб экрана (devicePixelRatio) для монитора, на котором находится рамка.
+
+    Решает проблему мультимониторов с разным DPI (например, 4K 150% + 1080p 100%).
+    """
     try:
-        return ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100.0
+        app = QApplication.instance()
+        if not app:
+            return 1.0
+
+        if bbox is not None and len(bbox) == 4:
+            left, top, right, bottom = bbox
+            # Берем центр выделенной области
+            cx = int((left + right) / 2)
+            cy = int((top + bottom) / 2)
+            screen = app.screenAt(QPoint(cx, cy))
+            if screen is not None:
+                return float(screen.devicePixelRatio())
+
+        # Fallback: берем экран, на котором сейчас фокус или основной монитор
+        primary = app.primaryScreen()
+        if primary is not None:
+            return float(primary.devicePixelRatio())
     except Exception:
-        return 1.0
+        pass
+
+    return 1.0
 
 def normalize_ocr_text(text: str) -> str:
     r"""Комплексная очистка и нормализация OCR-текста перед переводом.
@@ -278,14 +299,14 @@ class OcrWorker(QThread):
 
         try:
             left, top, right, bottom = bbox
-            scale = get_screen_scale()
+            # ПЕРЕДАЕМ BBOX: масштаб берется именно того монитора, где выделили текст
+            scale = get_screen_scale(bbox)
             physical = (
                 int(left * scale),
                 int(top * scale),
                 int(right * scale),
                 int(bottom * scale),
             )
-
             # 1. Захват экрана
             img = ImageGrab.grab(bbox=physical)
 
