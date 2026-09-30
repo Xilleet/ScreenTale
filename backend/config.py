@@ -6,7 +6,7 @@ import sys
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-APP_VERSION = "0.6.1-beta"
+APP_VERSION = "0.6.2-beta"
 
 
 def get_app_dir() -> str:
@@ -30,7 +30,10 @@ CONFIG_PATH = os.path.join(get_data_dir(), "config.json")
 DEFAULTS = {
     "font_size": 14,
     "theme": "dark",     
-    "opacity": 0.95,
+    "opacity": 0.95, 
+    "src_lang": "en", # Исходный язык текста на экране
+    "dst_lang": "ru", # Целевой язык перевода
+    "recent_pairs": [["en", "ru"], ["ja", "ru"], ["zh", "ru"], ["ko", "ru"]],
     "ocr_engine": "windows",    # windows | rapidocr | easyocr
     "ocr_direction": "horizontal",  # horizontal | vertical (Tategaki)
     "translator": "google",     # google | mymemory | opus | nllb | qwen
@@ -143,7 +146,7 @@ class SettingsManager(QObject):
 
         for key in ("theme", "font_size", "opacity", "gpu", "auto_copy",
                     "auto_delay_ms", "verbose_log", "ocr_engine", "ocr_direction",
-                    "welcome_completed", "selected_gguf"):
+                    "welcome_completed", "selected_gguf", "src_lang", "dst_lang", "recent_pairs"):
             if key in data:
                 self._values[key] = data[key]
 
@@ -158,3 +161,21 @@ class SettingsManager(QObject):
             for action, hk in saved_hotkeys.items():
                 if action in self._values["hotkeys"] and isinstance(hk, dict):
                     self._values["hotkeys"][action].update(hk)
+
+    def set_language_pair(self, src: str, dst: str):
+        """Устанавливает языковую пару и обновляет историю недавних (MRU)."""
+        if not src or not dst:
+            return
+        self.set("src_lang", src, save=False)
+        self.set("dst_lang", dst, save=False)
+
+        # Обновляем список недавних: поднимаем наверх без дубликатов
+        recents = [list(p) for p in self.get("recent_pairs", [])]
+        pair = [src, dst]
+        if pair in recents:
+            recents.remove(pair)
+        recents.insert(0, pair)
+
+        # Сохраняем максимум 5 последних пар
+        self.set("recent_pairs", recents[:5], save=True)
+        self.changed.emit("language_pair", (src, dst))

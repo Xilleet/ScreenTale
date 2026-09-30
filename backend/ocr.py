@@ -11,6 +11,7 @@ import time
 from PIL import Image, ImageGrab
 from PySide6.QtCore import QThread, Signal
 
+from backend.languages import get_win_ocr_tag
 from backend.logging_setup import vlog
 from backend.ocr_engines import (
     BaseOcrEngine,
@@ -112,11 +113,13 @@ class OcrWorker(QThread):
         use_gpu: bool = False,
         preferred_engine: str = "windows",
         preferred_direction: str = "horizontal",
+        src_lang: str = "en",
     ):
         super().__init__()
         self._requested_gpu = bool(use_gpu)
         self._preferred_engine = preferred_engine
         self._preferred_direction = preferred_direction
+        self._src_lang = src_lang
         self._active_engine_name = "windows"
         self._engine: BaseOcrEngine | None = None
         self._tasks: queue.Queue = queue.Queue()
@@ -133,6 +136,10 @@ class OcrWorker(QThread):
     def request_engine(self, engine_name: str) -> None:
         """Сменить OCR-движок на лету ('windows' или 'easyocr')."""
         self._tasks.put(("set_engine", str(engine_name)))
+
+    def request_language(self, src_lang: str) -> None:
+        """Сменить язык распознавания OCR на лету."""
+        self._tasks.put(("set_language", str(src_lang)))
 
     def stop(self) -> None:
         """Остановить поток воркера."""
@@ -174,9 +181,18 @@ class OcrWorker(QThread):
                 self._init_engine(task[1], self._requested_gpu)
             elif kind == "set_direction":
                 self._do_set_direction(task[1])
+            elif kind == "set_language":
+                self._do_set_language(task[1])
 
         if self._engine is not None:
             self._engine.unload()
+
+    def _do_set_language(self, src_lang: str) -> None:
+        self._src_lang = src_lang
+        if self._active_engine_name == "windows" and self._engine is not None:
+            win_tag = get_win_ocr_tag(src_lang)
+            self._engine.load(lang=win_tag)
+            print(f"[ocr] Язык Windows OCR переключен на: {win_tag}")
 
     def _do_set_direction(self, direction: str) -> None:
         self._preferred_direction = direction
@@ -189,6 +205,9 @@ class OcrWorker(QThread):
         self.state_changed.emit("busy", f"Загрузка {engine_name} OCR…")
         if self._engine is not None:
             self._engine.unload()
+        if engine_name == "windows":
+            win_tag = get_win_ocr_tag(self._src_lang)
+            win_engine = WindowsOcrEngine(default_lang=win_tag)
 
         # 1. Нативный Windows OCR
         if engine_name == "windows":

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from backend.config import get_app_dir
+from backend.languages import format_pair_badge, format_pair_menu_item
 from frontend.widgets import StatusPill
 
 SHADOW_MARGIN = 10
@@ -117,6 +119,8 @@ class FloatingToolbar(QFrame):
     stop_clicked = Signal()
     clear_clicked = Signal()
     ghost_clicked = Signal()
+    lang_pair_clicked = Signal(str, str)
+    open_settings_clicked = Signal()
     dock_changed = Signal(bool)
 
     BG_COLOR = QColor("#1e1b18")
@@ -187,6 +191,21 @@ class FloatingToolbar(QFrame):
                 background: rgba(224, 142, 69, 0.35);
                 border: 1px solid rgba(224, 142, 69, 0.6);
             }
+            QPushButton#ToolbarLangBtn {
+                background: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                color: #f2ede4;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 2px 7px;
+                min-height: 24px;
+                max-height: 24px;
+            }
+            QPushButton#ToolbarLangBtn:hover {
+                background: rgba(224, 142, 69, 0.25);
+                border-color: #e08e45;
+            }
         """)
 
         lay = QHBoxLayout(self)
@@ -238,7 +257,14 @@ class FloatingToolbar(QFrame):
         self.btn_ghost.setIconSize(QSize(22, 22))
         self.btn_ghost.clicked.connect(self.ghost_clicked.emit)
 
-        # 6. Ручка перетаскивания и открепления
+        # 6. Бейдж текущей языковой пары
+        self.btn_lang = QPushButton("🌐 ➔ 🌐")
+        self.btn_lang.setObjectName("ToolbarLangBtn")
+        self.btn_lang.setToolTip("Сменить язык перевода (клик — недавние пары)")
+        self.btn_lang.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_lang.clicked.connect(self._show_lang_menu)
+
+        # 7. Ручка перетаскивания и открепления
         self.btn_grip = _GripButton(self)
 
         lay.addWidget(self.btn_retry)
@@ -246,6 +272,7 @@ class FloatingToolbar(QFrame):
         lay.addWidget(self.btn_stop)
         lay.addWidget(self.btn_clear)
         lay.addWidget(self.btn_ghost)
+        lay.addWidget(self.btn_lang)
         lay.addWidget(self.btn_grip)
 
     def set_pause_active(self, paused: bool):
@@ -372,6 +399,57 @@ class FloatingToolbar(QFrame):
         # 5. СВОБОДНЫЙ ПОЛЕТ: бросили где-то в стороне — остаемся в свободном плавании
         self.undock()
 
+    def update_lang_badge(self, src: str, dst: str):
+        """Обновляет надпись на кнопке тулбара (например, '🇬🇧 ➔ 🇷🇺')."""
+        self._cur_src = src
+        self._cur_dst = dst
+        self.btn_lang.setText(format_pair_badge(src, dst))
+        self.adjustSize()
+        if self._is_docked:
+            self.align_to_window()
+
+    def _show_lang_menu(self):
+        """Всплывающее меню с недавними парами (MRU)."""
+        menu = QMenu(self)
+        cur_src = getattr(self, "_cur_src", "en")
+        cur_dst = getattr(self, "_cur_dst", "ru")
+
+        # 1. Быстрая смена мест
+        act_swap = menu.addAction(f"⇄ Поменять местами ({cur_dst.upper()} ➔ {cur_src.upper()})")
+        act_swap.triggered.connect(lambda: self.lang_pair_clicked.emit(cur_dst, cur_src))
+        menu.addSeparator()
+
+        # 2. Недавние пары из настроек
+        menu.addSection("Недавние пары:")
+        recents = []
+        if self.target_window and hasattr(self.target_window, "settings"):
+            recents = self.target_window.settings.get("recent_pairs", [])
+
+        if not recents:
+            recents = [["en", "ru"], ["ja", "ru"], ["zh", "ru"]]
+
+        for pair in recents:
+            if len(pair) == 2:
+                s, d = pair[0], pair[1]
+                is_active = (s == cur_src and d == cur_dst)
+                prefix = "✓ " if is_active else "   "
+                act = menu.addAction(f"{prefix}{format_pair_menu_item(s, d)}")
+                if is_active:
+                    act.setEnabled(False)
+                else:
+                    act.triggered.connect(lambda _=False, src=s, dst=d: self.lang_pair_clicked.emit(src, dst))
+
+        menu.addSeparator()
+        act_settings = menu.addAction("Все языки (Настройки)")
+        act_settings.triggered.connect(self.open_settings_clicked.emit)
+
+        # Выравниваем меню под кнопкой
+        menu_width = menu.sizeHint().width()
+        btn_pos = self.btn_lang.mapToGlobal(QPoint(0, 0))
+        x = btn_pos.x() + self.btn_lang.width() - menu_width
+        y = btn_pos.y() + self.btn_lang.height() + 4
+        menu.exec(QPoint(x, y))
+
 
 # ============================================================
 # Виджеты изменения размера и текста
@@ -497,6 +575,7 @@ class TranslateWindow(QWidget):
 
     def __init__(self, settings):
         super().__init__()
+        self.settings = settings
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -562,6 +641,11 @@ class TranslateWindow(QWidget):
         self._trim_timer.start(HISTORY_TRIM_INTERVAL_MS)
 
         self.toolbar = FloatingToolbar(target_window=self)
+        # Инициализируем бейдж текущими языками
+        src = self.settings.get("src_lang", "en")
+        dst = self.settings.get("dst_lang", "ru")
+        
+        self.toolbar.update_lang_badge(src, dst)
         self.toolbar.retry_clicked.connect(self.retry_requested.emit)
         self.toolbar.pause_clicked.connect(self.pause_requested.emit)
         self.toolbar.stop_clicked.connect(self.stop_requested.emit)

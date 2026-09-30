@@ -12,6 +12,7 @@ from PySide6.QtCore import QThread, Signal
 from tqdm import tqdm as tqdm_base
 
 from backend.config import get_data_dir
+from backend.languages import get_google_code, get_nllb_code
 
 ENGINE_GOOGLE = "google"
 ENGINE_MYMEMORY = "mymemory"
@@ -208,22 +209,28 @@ def is_network_error(text: str) -> bool:
     return any(m in t for m in markers)
 
 
-def translate_online(engine: str, text: str) -> str:
-    """Блокирующий онлайн-перевод с одним повтором при сбое."""
+# backend/translators.py -> функция translate_online
 
+def translate_online(engine: str, text: str, src_lang: str = "auto", dst_lang: str = "ru") -> str:
+    """Блокирующий онлайн-перевод с поддержкой Any-to-Any."""
     import deep_translator
+    
+    src = get_google_code(src_lang) if src_lang != "auto" else "auto"
+    dst = get_google_code(dst_lang)
+    
     last_error = None
     for attempt in range(2):
         try:
             if engine == ENGINE_MYMEMORY:
-                # MyMemory не поддерживает auto/двухбуквенные коды — только полные
+                # MyMemory требует явные языковые коды (auto не поддерживается)
+                my_src = "en" if src == "auto" else src
                 return deep_translator.MyMemoryTranslator(
-                    source="en-GB", target="ru-RU").translate(text)
-            return deep_translator.GoogleTranslator(source="auto", target="ru").translate(text)
+                    source=my_src, target=dst).translate(text)
+            return deep_translator.GoogleTranslator(source=src, target=dst).translate(text)
         except Exception as e:
             last_error = e
             if attempt == 0:
-                time.sleep(1.5)   # пауза и повтор — часто достаточно
+                time.sleep(1.5)
     raise last_error
 
 def _split_into_sentences(text: str) -> list:
@@ -256,8 +263,13 @@ class _OpusTranslator:
         out = self.model.generate(**inputs, max_length=512)
         return self.tokenizer.batch_decode(out, skip_special_tokens=True)[0]
 
-    def translate(self, text: str) -> str:
+    # backend/translators.py -> класс _OpusTranslator
+
+    def translate(self, text: str, src_lang: str = "en", dst_lang: str = "ru") -> str:
         import html
+        if src_lang != "en" or dst_lang != "ru":
+            return f"[Opus-MT поддерживает только EN ➔ RU. Выбрано: {src_lang.upper()} ➔ {dst_lang.upper()}]"
+            
         sentences = _split_into_sentences(text)
         if not sentences:
             return ""
@@ -267,18 +279,26 @@ class _OpusTranslator:
         return html.unescape(" ".join(results))
 
 
-class _NllbTranslator(_OpusTranslator):
-    SRC, DST = "eng_Latn", "rus_Cyrl"
+# backend/translators.py -> класс _NllbTranslator
 
-    def _translate_single(self, text: str) -> str:
+class _NllbTranslator(_OpusTranslator):
+    def translate(self, text: str, src_lang: str = "en", dst_lang: str = "ru") -> str:
         import html
+        
+        # Динамически получаем flores-200 коды для выбранной пары языков
+        src_nllb = get_nllb_code(src_lang)
+        dst_nllb = get_nllb_code(dst_lang)
+        
+        self.tokenizer.src_lang = src_nllb
         inputs = self.tokenizer(text, return_tensors="pt", padding=True,
                                 truncation=True, max_length=512)
         inputs = inputs.to(self.device)
+        
         if hasattr(self.tokenizer, "lang_code_to_id"):
-            bos = self.tokenizer.lang_code_to_id[self.DST]
+            bos = self.tokenizer.lang_code_to_id[dst_nllb]
         else:
-            bos = self.tokenizer.convert_tokens_to_ids(self.DST)
+            bos = self.tokenizer.convert_tokens_to_ids(dst_nllb)
+            
         out = self.model.generate(**inputs, forced_bos_token_id=bos,
                                   max_length=512, no_repeat_ngram_size=3)
         res = self.tokenizer.batch_decode(out, skip_special_tokens=True)[0]
@@ -412,8 +432,8 @@ class ModelManager(QThread):
     def unload(self):
         self._tasks.put(("unload",))
 
-    def translate(self, text, seq):
-        self._tasks.put(("translate", text, seq))
+    def translate(self, text, seq, src_lang="en", dst_lang="ru"):
+        self._tasks.put(("translate", text, seq, src_lang, dst_lang))
 
     def set_device(self, use_gpu):
         self._tasks.put(("set_device", bool(use_gpu)))
@@ -448,7 +468,9 @@ class ModelManager(QThread):
                 elif kind == "unload":
                     self._unload()
                 elif kind == "translate":
-                    self._translate(task[1], task[2])
+                    s_lang = task[3] if len(task) > 3 else "en"
+                    d_lang = task[4] if len(task) > 4 else "ru"
+                    self._translate(task[1], task[2], s_lang, d_lang)
                 elif kind == "set_device":
                     self._apply_device(task[1])
         finally:
@@ -543,13 +565,13 @@ class ModelManager(QThread):
         if self._translator is not None:
             self._drop_model()
 
-    def _translate(self, text, seq):
+    def _translate(self, text, seq, src_lang="en", dst_lang="ru"):
         if self._translator is None:
             self.translation_result.emit(
                 seq, "[Локальная модель ещё не готова — попробуйте через несколько секунд]")
             return
         try:
-            self.translation_result.emit(seq, self._translator.translate(text))
+            self.translation_result.emit(seq, self._translator.translate(text, src_lang, dst_lang))
         except Exception as e:
             self.translation_result.emit(seq, f"[Ошибка локального перевода: {e}]")
 

@@ -18,6 +18,7 @@ import urllib.request
 from PySide6.QtCore import QObject, Signal
 
 from backend.config import get_data_dir
+from backend.languages import build_llm_system_prompt
 from backend.runtime_manager import get_server_exe
 
 # ============================================================
@@ -280,6 +281,29 @@ class LlamaServerTranslator:
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         atexit.register(self.close)
 
+    def translate(self, text: str, src_lang: str = "en", dst_lang: str = "ru") -> str:
+        if self._proc is None or self._proc.poll() is not None:
+            raise RuntimeError("llama-server не запущен")
+            
+        system_prompt = build_llm_system_prompt(src_lang, dst_lang)
+        
+        body = json.dumps({
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text}
+            ],
+            "temperature": 0.2,
+            "max_tokens": 512,
+            "stream": False,
+        }).encode("utf-8")
+        
+        req = urllib.request.Request(
+            self._url("/v1/chat/completions"), data=body,
+            headers={"Content-Type": "application/json"})
+        with self._opener.open(req, timeout=60) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return data["choices"][0]["message"]["content"].strip()
+
     def _build_cmd(self, model: str) -> list:
         return [get_server_exe(), "-m", model,
                 "-ngl", "99" if self._use_gpu else "0",
@@ -349,19 +373,3 @@ class LlamaServerTranslator:
     def _url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._port}{path}"
 
-    def translate(self, text: str) -> str:
-        if self._proc is None or self._proc.poll() is not None:
-            raise RuntimeError("llama-server не запущен")
-        body = json.dumps({
-            "messages": [{"role": "system", "content": SYSTEM_PROMPT},
-                         {"role": "user", "content": text}],
-            "temperature": 0.2,
-            "max_tokens": 512,
-            "stream": False,
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            self._url("/v1/chat/completions"), data=body,
-            headers={"Content-Type": "application/json"})
-        with self._opener.open(req, timeout=60) as r:
-            data = json.loads(r.read().decode("utf-8"))
-        return data["choices"][0]["message"]["content"].strip()

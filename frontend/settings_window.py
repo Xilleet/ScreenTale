@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from backend.config import APP_VERSION, get_app_dir
 from backend.hotkeys import HotkeyManager
+from backend.languages import LANGUAGES
 from backend.logging_setup import set_verbose
 from backend.runtime_manager import (
     BACKENDS_CONFIG,
@@ -428,6 +430,23 @@ class SettingsWindow(QWidget):
         if hasattr(self, "_vram_timer"):
             self._vram_timer.stop()
 
+    def _on_lang_combo_changed(self):
+        src = self.combo_src_lang.currentData()
+        dst = self.combo_dst_lang.currentData()
+        if src and dst:
+            cur_src = self.settings.get("src_lang", "en")
+            cur_dst = self.settings.get("dst_lang", "ru")
+            if src != cur_src or dst != cur_dst:
+                self.settings.set_language_pair(src, dst)
+                self._saved_timer.start()
+
+    def _on_swap_langs_clicked(self):
+        src = self.combo_src_lang.currentData()
+        dst = self.combo_dst_lang.currentData()
+        if src and dst:
+            self.settings.set_language_pair(dst, src)
+            self._saved_timer.start()
+
     # ---------------- хелперы ----------------
     def _card(self, title=None):
         card = QFrame()
@@ -651,6 +670,88 @@ class SettingsWindow(QWidget):
 # ---------------- страница: Перевод ----------------
     def _page_translation(self):
         page, v = self._page()
+
+        # ========================================================
+        # Карточка Языковая пара (Any-to-Any)
+        # ========================================================
+
+        card_lang, c_lang = self._card("Языковая пара")
+
+        pair_row = QWidget()
+        pair_row.setObjectName("Row")
+        p_lay = QHBoxLayout(pair_row)
+        p_lay.setContentsMargins(0, 4, 0, 4)
+        p_lay.setSpacing(10)
+
+        # 1. Селектор исходного языка (С какого читаем)
+        v_src = QVBoxLayout()
+        v_src.setSpacing(4)
+        lbl_src = QLabel("Исходный язык:")
+        lbl_src.setObjectName("Hint")
+        self.combo_src_lang = QComboBox()
+        self.combo_src_lang.setObjectName("LangCombo")
+        self.combo_src_lang.setMinimumWidth(180)
+        self.combo_src_lang.setMaxVisibleItems(14)
+
+        # ФИКС МЕРЦАНИЯ И ПРОСВЕЧИВАНИЯ:
+        src_view = QListView()
+        src_view.setUniformItemSizes(True)
+        self.combo_src_lang.setView(src_view)
+        # Отключаем системную виндовую анимацию плавного выкатывания (убирает артефакт просвечивания)
+        if self.combo_src_lang.view().window():
+            self.combo_src_lang.view().window().setWindowFlags(
+                Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
+            )
+
+        self.combo_src_lang.wheelEvent = lambda event: event.ignore()
+        v_src.addWidget(lbl_src)
+        v_src.addWidget(self.combo_src_lang)
+
+        # 2. Кнопка быстрой смены мест (⇄)
+        self.btn_swap_langs = QPushButton("⇄")
+        self.btn_swap_langs.setObjectName("Ghost")
+        self.btn_swap_langs.setToolTip("Поменять языки местами")
+        self.btn_swap_langs.setFixedSize(36, 32)
+        self.btn_swap_langs.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_swap_langs.clicked.connect(self._on_swap_langs_clicked)
+
+        # 3. Селектор целевого языка (На какой переводим)
+        v_dst = QVBoxLayout()
+        v_dst.setSpacing(4)
+        lbl_dst = QLabel("Целевой язык:")
+        lbl_dst.setObjectName("Hint")
+        self.combo_dst_lang = QComboBox()
+        self.combo_dst_lang.setObjectName("LangCombo")
+        self.combo_dst_lang.setMinimumWidth(180)
+        self.combo_dst_lang.setMaxVisibleItems(14)
+
+        # ФИКС МЕРЦАНИЯ И ПРОСВЕЧИВАНИЯ:
+        dst_view = QListView()
+        dst_view.setUniformItemSizes(True)
+        self.combo_dst_lang.setView(dst_view)
+        if self.combo_dst_lang.view().window():
+            self.combo_dst_lang.view().window().setWindowFlags(
+                Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
+            )
+        self.combo_dst_lang.wheelEvent = lambda event: event.ignore()
+        v_dst.addWidget(lbl_dst)
+        v_dst.addWidget(self.combo_dst_lang)
+
+        # Заполняем оба списка 12 языками
+        for code, info in LANGUAGES.items():
+            item_text = f"[{code.upper()}]  {info['name']}"
+            self.combo_src_lang.addItem(item_text, code)
+            self.combo_dst_lang.addItem(item_text, code)
+
+        p_lay.addLayout(v_src, 1)
+        p_lay.addWidget(self.btn_swap_langs, 0, Qt.AlignmentFlag.AlignBottom)
+        p_lay.addLayout(v_dst, 1)
+
+        c_lang.addWidget(pair_row)
+        v.addWidget(card_lang)
+
+        self.combo_src_lang.currentIndexChanged.connect(self._on_lang_combo_changed)
+        self.combo_dst_lang.currentIndexChanged.connect(self._on_lang_combo_changed)
 
         # ========================================================
         # Карточка 1: Движок перевода
@@ -1116,8 +1217,6 @@ class SettingsWindow(QWidget):
             self.model_bar.set_value(percent)
         self.model_hint.setText(label)
 
-    # frontend/settings_window.py -> класс SettingsWindow
-
     def _show_runtime_menu(self):
         """Умное меню выбора бэкенда с проверкой железа и отметкой активного."""
         menu = QMenu(self)
@@ -1359,6 +1458,8 @@ class SettingsWindow(QWidget):
         current_ocr = self.settings.get("ocr_engine", "windows")
         self._on_setting_changed("ocr_engine", current_ocr)
         self.dir_row.setVisible(current_ocr == "rapidocr")
+        self._on_setting_changed("src_lang", self.settings.get("src_lang", "en"))
+        self._on_setting_changed("dst_lang", self.settings.get("dst_lang", "ru"))
 
     def _on_setting_changed(self, key, value):
         if key == "font_size":
@@ -1402,6 +1503,18 @@ class SettingsWindow(QWidget):
             self.dir_row.setVisible(value == "rapidocr")
         elif key == "ocr_direction":
             self.dir_seg.set_value(value)
+        elif key == "src_lang":
+            idx = self.combo_src_lang.findData(value)
+            if idx >= 0:
+                self.combo_src_lang.blockSignals(True)
+                self.combo_src_lang.setCurrentIndex(idx)
+                self.combo_src_lang.blockSignals(False)
+        elif key == "dst_lang":
+            idx = self.combo_dst_lang.findData(value)
+            if idx >= 0:
+                self.combo_dst_lang.blockSignals(True)
+                self.combo_dst_lang.setCurrentIndex(idx)
+                self.combo_dst_lang.blockSignals(False)
 
     # ---------------- служебное ----------------
     def resizeEvent(self, e):

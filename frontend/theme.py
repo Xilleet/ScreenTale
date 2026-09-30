@@ -122,7 +122,7 @@ QComboBox QAbstractItemView {
     background-color: @bg_card;
     border: 1px solid @stroke;
     border-radius: 6px;
-    padding: 4px;
+    padding: 2px;
     color: @text;
     selection-background-color: @bg_hover;
     selection-color: @text;

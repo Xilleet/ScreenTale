@@ -71,17 +71,19 @@ os.makedirs(_local_hf, exist_ok=True)
 class _OnlineTask(QRunnable):
     """Онлайн-перевод в пуле потоков; результаты — через сигналы контроллера."""
 
-    def __init__(self, engine, text, seq, report_ready, report_failed):
+    def __init__(self, engine, text, seq, report_ready, report_failed, src_lang="auto", dst_lang="ru"):
         super().__init__()
         self.engine = engine
         self.text = text
         self.seq = seq
         self._report_ready = report_ready
         self._report_failed = report_failed
+        self.src_lang = src_lang
+        self.dst_lang = dst_lang
 
     def run(self):
         try:
-            result = translate_online(self.engine, self.text)
+            result = translate_online(self.engine, self.text, src_lang=self.src_lang, dst_lang=self.dst_lang)
             self._report_ready(self.seq, result)
         except Exception as e:
             self._report_failed(self.seq, self.engine, str(e))
@@ -211,6 +213,9 @@ class AppController(QObject):
         self.settings_win.download_gguf_requested.connect(self._on_download_gguf)
         self.settings_win.install_runtime_requested.connect(self._on_install_runtime)
         self.settings_win.delete_gguf_requested.connect(self._on_delete_gguf)
+
+        self.trans_win.toolbar.lang_pair_clicked.connect(self.settings.set_language_pair)
+        self.trans_win.toolbar.open_settings_clicked.connect(self.show_settings)
 
     def _toggle_pause_auto(self):
         if not self._auto_active:
@@ -535,7 +540,12 @@ class AppController(QObject):
         self._req_seq += 1
         seq = self._req_seq
         engine = self.settings.get("translator", "google")
-        print(f"[ctrl] запрос перевода: движок={engine}, seq={seq}")
+        
+        # Получаем выбранную языковую пару из настроек
+        src_lang = self.settings.get("src_lang", "en")
+        dst_lang = self.settings.get("dst_lang", "ru")
+
+        print(f"[ctrl] запрос перевода ({src_lang.upper()} -> {dst_lang.upper()}): движок={engine}, seq={seq}")
         self._pending_translations[seq] = [
             time.strftime("%H:%M:%S"), time.monotonic(), text, None]
         self.trans_win.set_status("busy", "Перевод…")
@@ -545,11 +555,14 @@ class AppController(QObject):
                 print(f"[ctrl] модель загружается -> seq={seq} добавлен в FIFO-очередь")
                 self._loading_queue.append(seq)
                 return
-            self.model_manager.translate(text, seq)
+            # Передаем языки в локальный менеджер (LLM / NLLB / Opus)
+            self.model_manager.translate(text, seq, src_lang=src_lang, dst_lang=dst_lang)
         else:
+            # Передаем языки в онлайн-таску (Google / MyMemory)
             task = _OnlineTask(engine, text, seq,
                                self.translation_ready.emit,
-                               self.translation_failed.emit)
+                               self.translation_failed.emit,
+                               src_lang=src_lang, dst_lang=dst_lang)
             QThreadPool.globalInstance().start(task)
 
     def _apply_translation_result(self, seq, text):
@@ -713,6 +726,12 @@ class AppController(QObject):
         elif key == "selected_gguf" and self.settings.get("translator") == "qwen":
             use_gpu = bool(self.settings.get("gpu", True))
             self.model_manager.load("qwen", use_gpu=use_gpu, model_filename=value)
+        elif key == "src_lang":
+            self.ocr.request_language(value)
+        elif key in ("src_lang", "dst_lang", "language_pair"):
+            src = self.settings.get("src_lang", "en")
+            dst = self.settings.get("dst_lang", "ru")
+            self.trans_win.toolbar.update_lang_badge(src, dst)
 
     def _on_delete_model(self, engine_id):
         self.model_manager.unload()
@@ -933,6 +952,8 @@ def main():
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+
+    app.setEffectEnabled(Qt.UIEffect.UI_AnimateCombo, False)
 
     lock = QLockFile(os.path.join(QDir.tempPath(), "screen_translator.lock"))
     if not lock.tryLock(0):
