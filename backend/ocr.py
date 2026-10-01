@@ -339,7 +339,7 @@ class OcrWorker(QThread):
                 int(bottom * scale),
             )
             # 1. Захват экрана
-            img = ImageGrab.grab(bbox=physical)
+            img = ImageGrab.grab(bbox=physical, all_screens=True)
 
             # 2. Адаптивная подготовка размера кадра
             img = _preprocess_for_ocr(img)

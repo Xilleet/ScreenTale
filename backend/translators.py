@@ -99,11 +99,13 @@ def get_vram_info() -> tuple[int, int, str] | None:
 
     # 2. Запасной замер через torch (если уже загружен в память)
     try:
-        import torch
-        if torch.cuda.is_available():
-            free, total = torch.cuda.mem_get_info()
-            name = torch.cuda.get_device_name(0)
-            return int(total - free), int(total), name
+        # Проверяем, загружен ли torch, чтобы не фризить UI при старте
+        if "torch" in sys.modules:
+            import torch
+            if torch.cuda.is_available():
+                free, total = torch.cuda.mem_get_info()
+                name = torch.cuda.get_device_name(0)
+                return int(total - free), int(total), name
     except Exception:
         pass
 
@@ -475,6 +477,8 @@ class ModelManager(QThread):
                     m_file = task[3] if len(task) > 3 else ""
                     threads = task[4] if len(task) > 4 else 0
                     self._load(task[1], task[2], m_file, threads)
+                elif kind == "load_weights":
+                    self._load_weights(task[1], task[2], task[3])
                 elif kind == "unload":
                     self._unload()
                 elif kind == "translate":
@@ -497,6 +501,12 @@ class ModelManager(QThread):
         gc.collect()
         if self._torch is not None and self._torch.cuda.is_available():
             self._torch.cuda.empty_cache()
+
+        # Безопасная очистка кэша без жесткого импорта
+        if "torch" in sys.modules:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _load(self, engine_id, use_gpu_override, model_filename="", n_threads=0):
         use_gpu = self._use_gpu if use_gpu_override is None else bool(use_gpu_override)
@@ -523,24 +533,41 @@ class ModelManager(QThread):
             self._load_llama(use_gpu, model_filename, self._n_threads)
             return
 
+        # Светофор. Запускаем скачивание в фоне, 
+        # чтобы не блокировать инференс и UI.
+        threading.Thread(target=self._download_bg, args=(engine_id, use_gpu, spec), daemon=True).start()
+
+    def _download_bg(self, engine_id, use_gpu, spec):
+        """Фоновый поток для скачивания (не блокирует очередь)."""
         try:
-            # Фаза 1: скачивание с процентами (из кэша — мгновенно)
             from huggingface_hub import snapshot_download
             tracker = _DownloadTracker(lambda pct, label: self.progress.emit(pct, label))
             _ProgressTqdm.tracker = tracker
+            # Скачивание может занять 10 минут
             path = snapshot_download(repo_id=spec["repo"], tqdm_class=_ProgressTqdm)
             _ProgressTqdm.tracker = None
+            
+            # СВЕТОФОР: Скачивание завершено. Кладём задачу на загрузку в память 
+            # обратно в безопасную главную очередь ModelManager (защита PyTorch от крашей).
+            self._tasks.put(("load_weights", engine_id, use_gpu, path))
+        except Exception as e:
+            _ProgressTqdm.tracker = None
+            self._drop_model()
+            self.failed.emit(engine_id, str(e))
 
-            # Фаза 2: веса из кэша в память (без сети)
-            self.progress.emit(-1, "Загрузка весов в память…")
+    def _load_weights(self, engine_id, use_gpu, path):
+        """Выполняется в безопасном потоке ModelManager."""
+        try:
+            self.progress.emit(-1, "Загрузка весов в память VRAM/RAM…")
+            
+            import torch
             from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
             self._drop_model()
             tokenizer = AutoTokenizer.from_pretrained(path)
             model = AutoModelForSeq2SeqLM.from_pretrained(path)
 
-            cuda_ok = self._torch is not None and self._torch.cuda.is_available()
-            device = "cuda" if (use_gpu and cuda_ok) else "cpu"
+            device = "cuda" if (use_gpu and torch.cuda.is_available()) else "cpu"
             model = model.to(device)
 
             if engine_id == ENGINE_NLLB:
@@ -548,10 +575,10 @@ class ModelManager(QThread):
                 self._translator = _NllbTranslator(model, tokenizer, device)
             else:
                 self._translator = _OpusTranslator(model, tokenizer, device)
+                
             self._current_id = engine_id
             self.ready.emit(engine_id)
         except Exception as e:
-            _ProgressTqdm.tracker = None
             self._drop_model()
             self.failed.emit(engine_id, str(e))
 
@@ -606,7 +633,11 @@ class ModelManager(QThread):
         if self._translator is None:
             return
 
-        cuda_ok = self._torch is not None and self._torch.cuda.is_available()
+        cuda_ok = False
+        if "torch" in sys.modules:
+            import torch
+            cuda_ok = torch.cuda.is_available()
+            
         device = "cuda" if (use_gpu and cuda_ok) else "cpu"
         try:
             self._translator.to_device(device)

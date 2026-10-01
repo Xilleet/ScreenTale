@@ -1512,7 +1512,7 @@ class SettingsWindow(QWidget):
 
         import os
         total_cores = os.cpu_count() or 4
-        self._auto_threads = max(1, total_cores // 2)
+        self._auto_threads = max(1, (os.cpu_count() // 2) - 1)
 
         # 1. Заголовок
         lbl_threads = QLabel("Потоки процессора (CPU Threads)")
@@ -1770,19 +1770,27 @@ class SettingsWindow(QWidget):
             self.dir_row.setVisible(value == "rapidocr")
         elif key == "ocr_direction":
             self.dir_seg.set_value(value)
-        elif key == "src_lang":
+        elif key == "language_pair":
+            src, dst = value
             self._update_ocr_lang_warning()
-            idx = self.combo_src_lang.findData(value)
-            if idx >= 0:
+            
+            # Обновляем комбобокс исходящего языка
+            idx_src = self.combo_src_lang.findData(src)
+            if idx_src >= 0:
                 self.combo_src_lang.blockSignals(True)
-                self.combo_src_lang.setCurrentIndex(idx)
+                self.combo_src_lang.setCurrentIndex(idx_src)
                 self.combo_src_lang.blockSignals(False)
-        elif key == "dst_lang":
-            idx = self.combo_dst_lang.findData(value)
-            if idx >= 0:
+                
+            # Обновляем комбобокс целевого языка
+            idx_dst = self.combo_dst_lang.findData(dst)
+            if idx_dst >= 0:
                 self.combo_dst_lang.blockSignals(True)
-                self.combo_dst_lang.setCurrentIndex(idx)
+                self.combo_dst_lang.setCurrentIndex(idx_dst)
                 self.combo_dst_lang.blockSignals(False)
+                
+            # Обновляем бейдж на тулбаре перевода
+            self.trans_win.toolbar.update_lang_badge(src, dst)
+            
         elif key == "cpu_threads":
             val = int(value)
             self.threads_slider.blockSignals(True)

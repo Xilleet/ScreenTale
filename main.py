@@ -44,7 +44,8 @@ from backend.auto_mode import AutoModeWorker
 from backend.config import SettingsManager
 from backend.hotkeys import HotkeyManager
 from backend.ocr import OcrWorker
-from backend.runtime_manager import RuntimeDownloadWorker
+from backend.ocr_engines import prefetch_windows_ocr_langs
+from backend.runtime_manager import RuntimeDownloadWorker, clean_llama_dir
 from backend.translators import (
     ENGINE_LABELS,
     LOCAL_ENGINES,
@@ -108,6 +109,9 @@ class AppController(QObject):
         super().__init__()
         self.app = app
 
+        # Кэшируем языки OCR в главном потоке ДО старта всех воркеров
+        prefetch_windows_ocr_langs()
+
         self.settings = SettingsManager()
         self.hotkeys = HotkeyManager()
         apply_theme(app, self.settings.get("theme", "dark"))
@@ -127,6 +131,11 @@ class AppController(QObject):
         self.trans_win.retry_requested.connect(self._retry_last_translation)
         self.settings_win = SettingsWindow(self.settings, self.hotkeys, on_exit=self.exit_app)
         self._auto_paused = False
+
+        # Убиваем зависшие сервера от прошлых крашей
+        if self.settings.get("translator") == "qwen":
+            print("[ctrl] Проверка и очистка зависших процессов llama-server...")
+            clean_llama_dir()
 
         # Применить verbose-флаг из настроек
         set_verbose(bool(self.settings.get("verbose_log", False)))
@@ -884,7 +893,10 @@ class AppController(QObject):
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.show_settings()
+            if self.settings_win.isVisible():
+                self.settings_win.hide()
+            else:
+                self.show_settings()
 
     def show_settings(self):
         self.settings_win.show()
@@ -912,6 +924,32 @@ class AppController(QObject):
         self.settings_win.toast.show_toast("Напоминание об обновлении отложено на 7 дней")
 
     def _start_auto_update(self, manifest_data: dict):
+
+        # проверка до скачивания
+        app_dir = get_app_dir()
+        has_permission = False
+        try:
+            # cпособ проверки прав в Windows: попытка создать временный файл
+            test_file = os.path.join(app_dir, ".test_write_permission")
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+            has_permission = True
+        except (PermissionError, OSError):
+            has_permission = False
+
+        if not has_permission:
+            # Прячем прогресс-бар и возвращаем исходное состояние баннера
+            self.settings_win.update_banner.hide()
+            QMessageBox.warning(
+                self.settings_win,
+                "Требуются права Администратора",
+                "ScreenTale установлена в системную папку (например, Program Files).\n\n"
+                "Для автоматического обновления закройте программу, "
+                "нажмите по её ярлыку правой кнопкой мыши и выберите «Запуск от имени администратора»."
+            )
+            return
+        
         self.settings_win.update_banner.set_downloading_state("Подключение к репозиторию…")
         self.trans_win.set_status("busy", "Обновление…")
 

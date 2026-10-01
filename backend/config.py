@@ -169,8 +169,10 @@ class SettingsManager(QObject):
         """Устанавливает языковую пару и обновляет историю недавних (MRU)."""
         if not src or not dst:
             return
-        self.set("src_lang", src, save=False)
-        self.set("dst_lang", dst, save=False)
+            
+        # Обновляем словарь без триггера индивидуальных сигналов
+        self._values["src_lang"] = src
+        self._values["dst_lang"] = dst
 
         # Обновляем список недавних: поднимаем наверх без дубликатов
         recents = [list(p) for p in self.get("recent_pairs", [])]
@@ -179,6 +181,8 @@ class SettingsManager(QObject):
             recents.remove(pair)
         recents.insert(0, pair)
 
-        # Сохраняем максимум 5 последних пар
-        self.set("recent_pairs", recents[:5], save=True)
+        self._values["recent_pairs"] = recents[:5]
+        
+        # Сохраняем и испускаем ОДИН общий сигнал
+        self.save()
         self.changed.emit("language_pair", (src, dst))

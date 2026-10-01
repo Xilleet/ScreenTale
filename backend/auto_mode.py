@@ -63,7 +63,7 @@ class AutoModeWorker(QThread):
         scale = get_screen_scale(self._bbox)
         physical = (int(left * scale), int(top * scale),
                     int(right * scale), int(bottom * scale))
-        return np.array(ImageGrab.grab(bbox=physical))
+        return np.array(ImageGrab.grab(bbox=physical, all_screens=True))
 
     def _sleep(self, seconds):
         end = time.monotonic() + seconds

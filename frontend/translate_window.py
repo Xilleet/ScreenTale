@@ -10,7 +10,6 @@ from PySide6.QtGui import (
     QFont,
     QIcon,
     QPainter,
-    QPen,
     QTextCharFormat,
     QTextCursor,
 )
@@ -276,6 +275,9 @@ class FloatingToolbar(QFrame):
         lay.addWidget(self.btn_lang)
         lay.addWidget(self.btn_grip)
 
+        # Скрытие выпадающего списка языков
+        self._menu_last_closed = 0.0
+
     def set_pause_active(self, paused: bool):
         icon_name = "play_64.png" if paused else "pause_64.png"
         self.btn_pause.setIcon(_load_ui_icon(icon_name))
@@ -410,7 +412,12 @@ class FloatingToolbar(QFrame):
             self.align_to_window()
 
     def _show_lang_menu(self):
+        import time
         """Всплывающее меню с недавними парами (MRU)."""
+        # Защита от двойного клика (закрытия-открытия меню)
+        if time.time() - getattr(self, "_menu_last_closed", 0) < 0.2:
+            return
+
         menu = QMenu(self)
         cur_src = getattr(self, "_cur_src", "en")
         cur_dst = getattr(self, "_cur_dst", "ru")
@@ -449,6 +456,9 @@ class FloatingToolbar(QFrame):
         btn_pos = self.btn_lang.mapToGlobal(QPoint(0, 0))
         x = btn_pos.x() + self.btn_lang.width() - menu_width
         y = btn_pos.y() + self.btn_lang.height() + 4
+        
+        # Сохраняем точное время закрытия меню
+        menu.aboutToHide.connect(lambda: setattr(self, "_menu_last_closed", time.time()))
         menu.exec(QPoint(x, y))
 
 
@@ -663,6 +673,7 @@ class TranslateWindow(QWidget):
 
         self.resize(420, 120)
         self._reposition_overlays()
+        self._apply_text_shadow(bool(settings.get("text_outline", False)))
 
     def get_card_screen_rect(self) -> QRect:
         # ДОБАВЛЕНО: Защита от нулевых координат при скрытом окне
@@ -736,6 +747,8 @@ class TranslateWindow(QWidget):
             self.update_font_size(self._font_size)
         elif key == "opacity":
             self.update_opacity(float(value))
+        elif key == "text_outline": 
+            self._apply_text_shadow(bool(value))
 
     # frontend/translate_window.py -> класс TranslateWindow
 
@@ -770,12 +783,6 @@ class TranslateWindow(QWidget):
         cursor.select(QTextCursor.SelectionType.Document)
         fmt = QTextCharFormat()
         fmt.setFont(self._current_font)
-        
-        # Накладываем или снимаем контур
-        if getattr(self, "_text_outline", False):
-            fmt.setTextOutline(QPen(QColor(0, 0, 0, 230), 1.0))
-        else:
-            fmt.setTextOutline(QPen(Qt.PenStyle.NoPen))
             
         cursor.mergeCharFormat(fmt)
 
@@ -904,8 +911,6 @@ class TranslateWindow(QWidget):
         if not hasattr(self, "_current_font"):
             self._current_font = QFont("Segoe UI", getattr(self, "_font_size", 14))
 
-        has_outline = getattr(self, "_text_outline", False)
-
         # 2. Выделяем таймштамп янтарным акцентом, а саму реплику — цветом пергамента
         match = re.match(r"^(\(\d{2}:\d{2}:\d{2}\))\s*(.*)$", text, re.DOTALL)
         if match:
@@ -914,8 +919,6 @@ class TranslateWindow(QWidget):
             fmt_time = QTextCharFormat()
             fmt_time.setFont(self._current_font)            
             fmt_time.setForeground(QColor("#e08e45"))
-            if has_outline:
-                fmt_time.setTextOutline(QPen(QColor(0, 0, 0, 200), 0.8))
             cursor.setCharFormat(fmt_time)                  
             cursor.insertText(time_str + " ")
 
@@ -923,16 +926,12 @@ class TranslateWindow(QWidget):
             fmt_body = QTextCharFormat()
             fmt_body.setFont(self._current_font)            
             fmt_body.setForeground(QColor("#f2ede4"))
-            if has_outline:
-                fmt_body.setTextOutline(QPen(QColor(0, 0, 0, 230), 1.0))
             cursor.setCharFormat(fmt_body)                  
             cursor.insertText(body_str)
         else:
             fmt = QTextCharFormat()
             fmt.setFont(self._current_font)                
             fmt.setForeground(QColor("#f2ede4"))
-            if has_outline:
-                fmt.setTextOutline(QPen(QColor(0, 0, 0, 230), 1.0))
             cursor.setCharFormat(fmt)                      
             cursor.insertText(text)
 
@@ -945,6 +944,17 @@ class TranslateWindow(QWidget):
 
         if not self.isVisible() and not self.force_hidden and not self._is_paused:
             self.show()
+
+    def _apply_text_shadow(self, enabled: bool):
+        """Накладывает внешнюю контрастную тень на весь текст (без искажения шрифта)."""
+        if enabled:
+            shadow = QGraphicsDropShadowEffect(self.text_widget)
+            shadow.setBlurRadius(2)  # Легкое размытие для мягкости
+            shadow.setOffset(1.2, 1.2) # Сдвиг вправо-вниз
+            shadow.setColor(QColor(0, 0, 0, 240)) # Глубокий черный
+            self.text_widget.setGraphicsEffect(shadow)
+        else:
+            self.text_widget.setGraphicsEffect(None)
 
     def clear_history(self):
         self.text_widget.clear()
