@@ -44,7 +44,6 @@ from backend.auto_mode import AutoModeWorker
 from backend.config import SettingsManager
 from backend.hotkeys import HotkeyManager
 from backend.ocr import OcrWorker
-from backend.ocr_engines import prefetch_windows_ocr_langs
 from backend.runtime_manager import RuntimeDownloadWorker, clean_llama_dir
 from backend.translators import (
     ENGINE_LABELS,
@@ -108,9 +107,6 @@ class AppController(QObject):
     def __init__(self, app):
         super().__init__()
         self.app = app
-
-        # Кэшируем языки OCR в главном потоке ДО старта всех воркеров
-        prefetch_windows_ocr_langs()
 
         self.settings = SettingsManager()
         self.hotkeys = HotkeyManager()
@@ -219,9 +215,15 @@ class AppController(QObject):
                 2500,
             )
 
+        # Отложенный запрос на апдейт
         self.update_available.connect(self._on_update_available)
-        task = UpdateCheckTask(lambda data: self.update_available.emit(data))
-        QThreadPool.globalInstance().start(task)
+        
+        # Даём сети и приложению 3 секунды на спокойный старт
+        def _check_updates():
+            task = UpdateCheckTask(lambda data: self.update_available.emit(data))
+            QThreadPool.globalInstance().start(task)
+
+        QTimer.singleShot(3000, _check_updates)
 
         self.settings_win.update_banner.update_clicked.connect(self._start_auto_update)
         self.settings_win.update_banner.snooze_clicked.connect(self._on_update_snoozed)

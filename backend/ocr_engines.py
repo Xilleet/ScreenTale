@@ -38,26 +38,7 @@ HAS_WINRT = WinrtOcrEngine is not None and Language is not None
 
 # Глобальный мьютекс для безопасной работы с WinRT COM из любых потоков
 _winrt_lock = threading.Lock()
-_installed_langs_cache = None
-
-def prefetch_windows_ocr_langs() -> list[str]:
-    """Безопасно один раз запрашивает у Windows список всех установленных пакетов OCR."""
-    global _installed_langs_cache
-    if _installed_langs_cache is not None:
-        return _installed_langs_cache
-
-    if not HAS_WINRT or WinrtOcrEngine is None:
-        _installed_langs_cache = ["en-US"]
-        return _installed_langs_cache
-
-    with _winrt_lock:
-        try:
-            langs = WinrtOcrEngine.available_recognizer_languages
-            _installed_langs_cache = [l.language_tag for l in langs]
-        except Exception as e:
-            vlog(f"[windows_ocr] ошибка получения языков: {e}")
-            _installed_langs_cache = ["en-US"]
-        return _installed_langs_cache
+_lang_cache: dict[str, bool] = {}  # Простой словарь-кэш: "en-US" -> True
 
 class BaseOcrEngine(ABC):
     """Абстрактный интерфейс OCR-движка."""
@@ -86,26 +67,50 @@ class BaseOcrEngine(ABC):
         ...
 
     def get_installed_languages(self) -> list[str]:
-        return prefetch_windows_ocr_langs()
+        if not HAS_WINRT or WinrtOcrEngine is None:
+            return ["en-US"]
+        with _winrt_lock:
+            try:
+                langs = WinrtOcrEngine.available_recognizer_languages
+                return [getattr(l, "language_tag", str(l)) for l in langs]
+            except Exception:
+                return ["en-US"]
 
     def check_language_support(self, lang: str) -> tuple[bool, str]:
-        """Мгновенно проверяет наличие пакета в Python-кэше без вызова WinRT COM."""
-        if not HAS_WINRT or WinrtOcrEngine is None:
-            return True, ""
+        """Родной системный метод Windows с безопасным кэшированием результатов."""
+        if not HAS_WINRT or WinrtOcrEngine is None or Language is None:
+            return (True, "")
 
-        tag = lang
-        installed_langs = prefetch_windows_ocr_langs()
+        tag = lang if "-" in lang else ("ja-JP" if lang == "ja" else "en-US")
 
-        if tag in installed_langs:
-            return True, ""
+        # 1. Если язык уже проверялся — отдаем результат мгновенно из словаря
+        if tag in _lang_cache:
+            if _lang_cache[tag]:
+                return (True, "")
+            cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
+            return (False, f"В Windows не установлен пакет OCR для [{tag}].\nКоманда: {cmd}")
 
-        cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
-        msg = (
-            f"В Windows не установлен языковой пакет OCR для [{tag}].\n"
-            "Установите его в: Параметры Windows -> Время и язык -> Язык,\n"
-            f"либо выполните в PowerShell от админа:\n{cmd}"
-        )
-        return False, msg
+        # 2. Первичный безопасный запрос к Windows под мьютексом
+        with _winrt_lock:
+            try:
+                win_lang = Language(tag)
+                supported = bool(WinrtOcrEngine.is_language_supported(win_lang))
+                _lang_cache[tag] = supported
+
+                if not supported:
+                    cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
+                    msg = (
+                        f"В Windows не установлен языковой пакет OCR для [{tag}].\n"
+                        "Установите его в: Параметры Windows -> Время и язык -> Язык,\n"
+                        f"либо выполните в PowerShell от админа:\n{cmd}"
+                    )
+                    return (False, msg)
+
+                return (True, "")
+
+            except Exception as e:
+                _lang_cache[tag] = False
+                return (False, f"Ошибка проверки языка Windows OCR: {e}")
 
 # =====================================================================
 # 1. Windows Native OCR (WinRT API)
@@ -129,15 +134,46 @@ class WindowsOcrEngine(BaseOcrEngine):
         with _winrt_lock:
             try:
                 langs = WinrtOcrEngine.available_recognizer_languages
-                return [l.language_tag for l in langs]
-            except Exception as e:
-                vlog(f"[windows_ocr] ошибка получения языков: {e}")
-                return []
+                return [getattr(l, "language_tag", str(l)) for l in langs]
+            except Exception:
+                return ["en-US"]
 
     def check_language_support(self, lang: str) -> tuple[bool, str]:
-        """Проверяет наличие системного языкового пакета OCR с кэшированием."""
+        """Родной системный метод Windows с безопасным кэшированием."""
         if not HAS_WINRT or WinrtOcrEngine is None or Language is None:
-            return True, ""
+            return (True, "")
+
+        tag = lang if "-" in lang else ("ja-JP" if lang == "ja" else "en-US")
+
+        # 1. Если уже проверяли этот язык ранее — отдаем ответ мгновенно (без вызова COM)
+        if tag in _lang_cache:
+            if _lang_cache[tag]:
+                return (True, "")
+            cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
+            return (False, f"В Windows не установлен пакет OCR для [{tag}].\nКоманда: {cmd}")
+
+        # 2. Первичная проверка через нативный Windows API под мьютексом
+        with _winrt_lock:
+            try:
+                win_lang = Language(tag)
+                supported = bool(WinrtOcrEngine.is_language_supported(win_lang))
+                _lang_cache[tag] = supported
+
+                if not supported:
+                    cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
+                    msg = (
+                        f"В Windows не установлен языковой пакет OCR для [{tag}].\n"
+                        "Установите его в: Параметры Windows -> Время и язык -> Язык,\n"
+                        f"либо выполните в PowerShell от админа:\n{cmd}"
+                    )
+                    return (False, msg)
+
+                return (True, "")
+
+            except Exception as e:
+                # Если Windows вернула ошибку, сохраняем False, чтобы не падать
+                _lang_cache[tag] = False
+                return (False, f"Ошибка проверки языка Windows OCR: {e}")
 
     def load(self, use_gpu: bool = False, lang: str = "en") -> bool:
         with _winrt_lock:

@@ -214,7 +214,9 @@ class OcrWorker(QThread):
         # Если юзер предпочитает Windows OCR
         if self._preferred_engine == "windows":
             win_engine = WindowsOcrEngine(default_lang=win_tag)
-            ok, _ = win_engine.check_language_support(win_tag)
+            
+            res = win_engine.check_language_support(win_tag)
+            ok = res[0] if (isinstance(res, tuple) and len(res) == 2) else bool(res)
             
             if ok:
                 # Язык поддерживается Windows -> включаем быстрый нативный OCR
@@ -262,7 +264,8 @@ class OcrWorker(QThread):
             win_tag = get_win_ocr_tag(self._src_lang)
             win_engine = WindowsOcrEngine(default_lang=win_tag)
             if win_engine.is_available():
-                ok, _ = win_engine.check_language_support(win_tag)
+                res = win_engine.check_language_support(win_tag)
+                ok = res[0] if (isinstance(res, tuple) and len(res) == 2) else bool(res)
                 if ok:
                     win_engine.load(lang=win_tag)
                     self._engine = win_engine

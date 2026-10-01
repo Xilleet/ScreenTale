@@ -40,24 +40,52 @@ class UpdateCheckTask(QRunnable):
         self._on_update_found = on_update_found
 
     def run(self):
-        try:
-            req = urllib.request.Request(
-                MANIFEST_URL,
-                headers={"User-Agent": "ScreenTale-App"}
-            )
-            with urllib.request.urlopen(req, timeout=4) as response:
-                if response.status != 200:
+        import time
+
+        for attempt in range(2):
+            try:
+                if attempt > 0:
+                    print(f"[updater] Повторная попытка запроса манифеста ({attempt + 1}/2)...")
+                else:
+                    print("[updater] Запрос манифеста с GitHub...")
+
+                req = urllib.request.Request(
+                    MANIFEST_URL,
+                    headers={"User-Agent": "ScreenTale-App"}
+                )
+
+                with urllib.request.urlopen(req, timeout=8) as response:
+                    status = response.status
+                    if status != 200:
+                        print(f"[updater] Сервер вернул код {status} вместо 200 OK")
+                        return
+
+                    raw_data = response.read().decode("utf-8")
+                    data = json.loads(raw_data)
+
+                remote_ver = data.get("version", "").strip()
+                if not remote_ver:
+                    print("[updater] Ответ получен, но в manifest.json нет поля 'version'")
                     return
-                data = json.loads(response.read().decode("utf-8"))
 
-            remote_ver = data.get("version", "")
-            if not remote_ver:
-                return
+                # Сравниваем версии и выводим красивый отчет в консоль
+                is_newer = _parse_version(remote_ver) > _parse_version(APP_VERSION)
+                print(f"[updater] У вас: v{APP_VERSION} | На GitHub: v{remote_ver}")
 
-            if _parse_version(remote_ver) > _parse_version(APP_VERSION):
-                self._on_update_found(data)
-        except Exception as e:
-            print(f"[updater] проверка обновлений пропущена: {e}")
+                if is_newer:
+                    print(f"[updater] Доступно обновление до v{remote_ver}!")
+                    self._on_update_found(data)
+                else:
+                    print("[updater] У вас установлена самая свежая версия.")
+
+                return  # Успешно завершили проверку — выходим
+
+            except Exception as e:
+                if attempt == 0:
+                    print(f"[updater] Сеть ещё не готова ({e}), повтор через 2 сек...")
+                    time.sleep(2)
+                    continue
+                print(f"[updater] Не удалось получить манифест: {e}")
 
 
 class UpdateDownloadWorker(QObject):

@@ -414,7 +414,9 @@ class SettingsWindow(QWidget):
 
         tag = get_win_ocr_tag(src_lang)
         win_eng = WindowsOcrEngine(default_lang=tag)
-        ok, _ = win_eng.check_language_support(tag)
+
+        res = win_eng.check_language_support(tag)
+        ok = res[0] if (isinstance(res, tuple) and len(res) == 2) else bool(res)
 
         if not ok:
             lang_name = get_lang_name(src_lang)
@@ -1787,10 +1789,7 @@ class SettingsWindow(QWidget):
                 self.combo_dst_lang.blockSignals(True)
                 self.combo_dst_lang.setCurrentIndex(idx_dst)
                 self.combo_dst_lang.blockSignals(False)
-                
-            # Обновляем бейдж на тулбаре перевода
-            self.trans_win.toolbar.update_lang_badge(src, dst)
-            
+
         elif key == "cpu_threads":
             val = int(value)
             self.threads_slider.blockSignals(True)
