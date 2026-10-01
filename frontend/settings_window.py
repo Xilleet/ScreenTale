@@ -1,3 +1,4 @@
+import ctypes
 import os
 import sys
 
@@ -396,43 +397,34 @@ class SettingsWindow(QWidget):
             self.toast.show_toast(f"Не удалось открыть параметры: {e}")
 
     def _copy_powershell_ocr_cmd(self):
-        """Копирует команду PowerShell для установки пакета в буфер обмена."""
-        src_lang = self.settings.get("src_lang", "en")
-        tag = get_win_ocr_tag(src_lang)
-        cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
+        """Копирует команду в буфер обмена."""
+        cmd = self._get_current_ocr_cmd()
         QApplication.instance().clipboard().setText(cmd)
         self.toast.show_toast("Команда скопирована! Запустите PowerShell от админа и вставьте (Ctrl+V).", ms=3500)
 
     def _on_recheck_ocr_lang(self):
-        """Сбрасывает кэш и на лету переключает OCR-движок при обнаружении пакета."""
+        """Сбрасывает кэш и проверяет установку пакета."""
         src_lang = self.settings.get("src_lang", "en")
         tag = get_win_ocr_tag(src_lang)
 
-        # 1. Сбрасываем кэш именно для текущего языка
+        # Сбрасываем кэш
         reset_ocr_lang_cache(tag)
 
-        # 2. Опрашиваем Windows заново
+        # Проверяем наличие
         win_eng = WindowsOcrEngine(default_lang=tag)
         res = win_eng.check_language_support(tag)
         ok = res[0] if (isinstance(res, tuple) and len(res) == 2) else bool(res)
 
         if ok:
-            # Пакет обнаружен! Прячем плашку
+            # Ура! Пакет появился
             self.ocr_lang_warn_frame.hide()
-            self.toast.show_toast(f"Пакет {tag} найден! Windows OCR активирован.", ms=3000)
-            
-            # Принудительно отдаем команду воркеру переключиться на быстрый Windows OCR
+            self.toast.show_toast(f"Пакет {tag} успешно найден! Windows OCR активирован.", ms=3000)
             self.settings.changed.emit("ocr_engine", "windows")
         else:
-            # Всё ещё не докачался
-            self._update_ocr_lang_warning()
-            self.toast.show_toast(
-                "Пакет пока не обнаружен. Дождитесь окончания установки в Windows и нажмите снова.", 
-                ms=3500
-            )
+            self.toast.show_toast("Пакет пока не обнаружен. Убедитесь, что процесс в окне консоли завершён.", ms=3500)
 
     def _update_ocr_lang_warning(self):
-        """Проверяет наличие системного пакета Windows OCR и обновляет плашку."""
+        """Обновляет текст и видимость адаптивной плашки."""
         engine = self.settings.get("ocr_engine", "windows")
         src_lang = self.settings.get("src_lang", "en")
 
@@ -442,26 +434,63 @@ class SettingsWindow(QWidget):
 
         tag = get_win_ocr_tag(src_lang)
         win_eng = WindowsOcrEngine(default_lang=tag)
-
         res = win_eng.check_language_support(tag)
         ok = res[0] if (isinstance(res, tuple) and len(res) == 2) else bool(res)
 
         if not ok:
             lang_name = get_lang_name(src_lang)
-            
-            if src_lang in ("ja", "zh"):
-                fallback_note = "Сейчас сканирование временно выполняет встроенный RapidOCR (Азия / Манга).\n"
-            else:
-                fallback_note = "Без пакета распознавание текста на этом языке может работать некорректно.\n"
+            fallback_note = "Сейчас сканирование временно выполняет встроенный RapidOCR (Азия / Манга).\n" if src_lang in ("ja", "zh") else ""
 
             self.lbl_ocr_warn_title.setText(f"⚠️ Пакет Windows OCR не найден: [{lang_name} ({tag})]")
             self.lbl_ocr_warn_text.setText(
                 f"{fallback_note}"
-                f"Установите компонент распознавания в Windows для быстрого чтения:"
+                f"Для быстрого нативного распознавания (10–15 мс) установите официальный модуль Windows:"
             )
+            
+            # Обновляем текст в блоке терминала под текущий язык
+            cmd = self._get_current_ocr_cmd()
+            self.lbl_terminal_code.setText(f"> {cmd}")
+            
             self.ocr_lang_warn_frame.show()
         else:
             self.ocr_lang_warn_frame.hide()
+
+    def _get_current_ocr_cmd(self) -> str:
+        """Генерирует точную команду PowerShell для текущего языка."""
+        src_lang = self.settings.get("src_lang", "en")
+        tag = get_win_ocr_tag(src_lang)
+        return f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
+
+    def _run_powershell_ocr_elevated(self):
+        """Запускает окно PowerShell от имени Администратора для установки пакета."""
+        if sys.platform != "win32":
+            return
+
+        cmd = self._get_current_ocr_cmd()
+        # Запускаем PowerShell с открытым окном, чтобы пользователь видел реальный прогресс загрузки Windows
+        ps_script = (
+            f'Write-Host "ScreenTale: Установка компонента Windows OCR..." -ForegroundColor Yellow; '
+            f'{cmd}; '
+            f'Write-Host "\n[OK] Готово! Закройте это окно, вернитесь в ScreenTale и нажмите «Обновить статус»." -ForegroundColor Green; '
+            f'pause'
+        )
+
+        try:
+            # Запрос UAC (окно подтверждения прав администратора)
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                "powershell.exe",
+                f'-NoExit -Command "{ps_script}"',
+                None,
+                1  # SW_SHOWNORMAL (показываем окно терминала)
+            )
+            if ret > 32:
+                self.toast.show_toast("Установщик запущен в отдельном окне. После завершения нажмите «Обновить статус».", ms=4500)
+            else:
+                self.toast.show_toast("Запуск отменён (требуются права администратора).", ms=3000)
+        except Exception as e:
+            self.toast.show_toast(f"Не удалось запустить установщик: {e}", ms=3500)
 
     def _build_content(self):
         self.pages = QStackedWidget()
@@ -478,6 +507,7 @@ class SettingsWindow(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(page)
         return scroll
 
@@ -864,9 +894,20 @@ class SettingsWindow(QWidget):
         self.ocr_lang_warn_frame.setObjectName("OcrWarnFrame")
         self.ocr_lang_warn_frame.setStyleSheet("""
             QFrame#OcrWarnFrame {
-                background-color: #24201c;
+                background-color: #201d1a;
                 border: 1px solid #e08e45;
                 border-radius: 9px;
+            }
+            QFrame#TerminalBox {
+                background-color: #121110;
+                border: 1px solid #3d3731;
+                border-radius: 6px;
+            }
+            QLabel#TerminalText {
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 10.5px;
+                color: #e08e45;
+                background: transparent;
             }
             QPushButton#OcrPrimaryBtn {
                 background-color: #e08e45;
@@ -881,7 +922,7 @@ class SettingsWindow(QWidget):
                 background-color: #f59e0b;
             }
             QPushButton#OcrSecondaryBtn {
-                background: rgba(255, 255, 255, 0.04);
+                background: rgba(255, 255, 255, 0.05);
                 border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 6px;
                 color: #f2ede4;
@@ -889,49 +930,71 @@ class SettingsWindow(QWidget):
                 padding: 6px 12px;
             }
             QPushButton#OcrSecondaryBtn:hover {
-                background: rgba(224, 142, 69, 0.15);
+                background: rgba(224, 142, 69, 0.2);
                 border-color: #e08e45;
             }
         """)
 
         warn_v = QVBoxLayout(self.ocr_lang_warn_frame)
         warn_v.setContentsMargins(14, 12, 14, 12)
-        warn_v.setSpacing(6)
+        warn_v.setSpacing(8)
 
-        # 1. Заголовок предупреждения
+        # 1. Заголовок
         self.lbl_ocr_warn_title = QLabel("⚠️ Пакет Windows OCR не установлен")
         self.lbl_ocr_warn_title.setStyleSheet("font-weight: 600; color: #e08e45; font-size: 13px;")
         warn_v.addWidget(self.lbl_ocr_warn_title)
 
-        # 2. Описание проблемы
+        # 2. Пояснение без упоминания раскладок
         self.lbl_ocr_warn_text = QLabel()
         self.lbl_ocr_warn_text.setObjectName("Hint")
         self.lbl_ocr_warn_text.setWordWrap(True)
         self.lbl_ocr_warn_text.setStyleSheet("color: #d6cfc7; font-size: 12px; line-height: 1.4;")
         warn_v.addWidget(self.lbl_ocr_warn_text)
 
-        # 3. Кнопки действий
+        # 3. Визуальный блок терминала (Bash / PowerShell)
+        term_frame = QFrame()
+        term_frame.setObjectName("TerminalBox")
+        term_lay = QHBoxLayout(term_frame)
+        term_lay.setContentsMargins(10, 7, 10, 7)
+        
+        self.lbl_terminal_code = QLabel()
+        self.lbl_terminal_code.setObjectName("TerminalText")
+        self.lbl_terminal_code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        term_lay.addWidget(self.lbl_terminal_code, 1)
+
+        warn_v.addWidget(term_frame)
+
+        # 4. Пояснение под кодом
+        lbl_hint_after = QLabel("💡 Команда устанавливает ТОЛЬКО модуль OCR (без добавления лишней раскладки клавиатуры).")
+        lbl_hint_after.setObjectName("Hint")
+        lbl_hint_after.setStyleSheet("color: #9c9388; font-size: 11px;")
+        warn_v.addWidget(lbl_hint_after)
+
+        # 5. Кнопки действий (все три в один ряд)
         warn_btn_row = QHBoxLayout()
         warn_btn_row.setContentsMargins(0, 4, 0, 0)
         warn_btn_row.setSpacing(8)
 
-        btn_open_win_settings = QPushButton("Открыть параметры Windows")
-        btn_open_win_settings.setObjectName("OcrPrimaryBtn")
-        btn_open_win_settings.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_open_win_settings.clicked.connect(self._open_windows_language_settings)
+        # 1. Главная кнопка
+        btn_run_ps = QPushButton("Установить в 1 клик")
+        btn_run_ps.setObjectName("OcrPrimaryBtn")
+        btn_run_ps.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_run_ps.clicked.connect(self._run_powershell_ocr_elevated)
 
-        btn_copy_ps_cmd = QPushButton("Скопировать команду PowerShell")
-        btn_copy_ps_cmd.setObjectName("OcrSecondaryBtn")
-        btn_copy_ps_cmd.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_copy_ps_cmd.clicked.connect(self._copy_powershell_ocr_cmd)
+        # 2. Кнопка копирования
+        btn_copy = QPushButton("Скопировать")
+        btn_copy.setObjectName("OcrSecondaryBtn")
+        btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_copy.clicked.connect(self._copy_powershell_ocr_cmd)
 
-        btn_recheck = QPushButton("Проверить снова")
+        # 3. Кнопка проверки
+        btn_recheck = QPushButton("Обновить статус")
         btn_recheck.setObjectName("OcrSecondaryBtn")
         btn_recheck.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_recheck.clicked.connect(self._on_recheck_ocr_lang)
 
-        warn_btn_row.addWidget(btn_open_win_settings)
-        warn_btn_row.addWidget(btn_copy_ps_cmd)
+        warn_btn_row.addWidget(btn_run_ps)
+        warn_btn_row.addWidget(btn_copy)
         warn_btn_row.addWidget(btn_recheck)
         warn_btn_row.addStretch(1)
         warn_v.addLayout(warn_btn_row)
