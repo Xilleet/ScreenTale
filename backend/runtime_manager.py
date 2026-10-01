@@ -156,9 +156,24 @@ def run_smoke_test() -> tuple[bool, str]:
         return False, "Тестовый запуск завис по таймауту"
     except Exception as e:
         return False, str(e)
+    
+def kill_llama_server():
+    """Принудительно глушит зависший процесс llama-server.exe БЕЗ удаления файлов."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "llama-server.exe", "/T"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+            time.sleep(0.3)
+        except Exception:
+            pass
 
 def clean_llama_dir() -> bool:
-    """Убивает зависший сервер и полностью очищает папку llama/ от старых DLL."""
+    """Убивает зависший сервер и полностью очищает папку llama/ от старых DLL (только для переустановки)."""
     # 1. Принудительно глушим старый процесс, если он почему-то еще жив
     if sys.platform == "win32":
         try:

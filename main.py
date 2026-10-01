@@ -44,7 +44,7 @@ from backend.auto_mode import AutoModeWorker
 from backend.config import SettingsManager
 from backend.hotkeys import HotkeyManager
 from backend.ocr import OcrWorker
-from backend.runtime_manager import RuntimeDownloadWorker, clean_llama_dir
+from backend.runtime_manager import RuntimeDownloadWorker, kill_llama_server
 from backend.translators import (
     ENGINE_LABELS,
     LOCAL_ENGINES,
@@ -131,7 +131,7 @@ class AppController(QObject):
         # Убиваем зависшие сервера от прошлых крашей
         if self.settings.get("translator") == "qwen":
             print("[ctrl] Проверка и очистка зависших процессов llama-server...")
-            clean_llama_dir()
+            kill_llama_server()
 
         # Применить verbose-флаг из настроек
         set_verbose(bool(self.settings.get("verbose_log", False)))
