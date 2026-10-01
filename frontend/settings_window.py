@@ -253,7 +253,11 @@ class SettingsWindow(QWidget):
         self._gpu_available = True
 
         self.setWindowTitle("ScreenTale — Настройки")
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint 
+          | Qt.WindowType.Window 
+          | Qt.WindowType.WindowMinimizeButtonHint
+        )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFixedSize(840, 600)
 
@@ -296,10 +300,22 @@ class SettingsWindow(QWidget):
         if sys.platform == "win32":
             try:
                 import ctypes
+                hwnd = int(self.winId())
+
+                # 1. Скругление углов в Windows 11
                 val = ctypes.c_int(2)
                 ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    int(self.winId()), 33, ctypes.byref(val), ctypes.sizeof(val)
+                    hwnd, 33, ctypes.byref(val), ctypes.sizeof(val)
                 )
+
+                # 2. Включаем реакцию на клики по Панели задач Windows (WS_MINIMIZEBOX + WS_SYSMENU)
+                user32 = ctypes.windll.user32
+                style = user32.GetWindowLongW(hwnd, -16)  # -16 = GWL_STYLE
+                # 0x00020000 = WS_MINIMIZEBOX, 0x00080000 = WS_SYSMENU
+                user32.SetWindowLongW(hwnd, -16, style | 0x00020000 | 0x00080000)
+                # 0x0027 = SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER (применяем стиль)
+                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
+
             except Exception:
                 pass
 
