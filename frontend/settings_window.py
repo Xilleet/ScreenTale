@@ -26,7 +26,7 @@ from backend.config import APP_VERSION, get_app_dir
 from backend.hotkeys import HotkeyManager
 from backend.languages import LANGUAGES, get_lang_name, get_win_ocr_tag
 from backend.logging_setup import set_verbose
-from backend.ocr_engines import WindowsOcrEngine
+from backend.ocr_engines import WindowsOcrEngine, reset_ocr_lang_cache
 from backend.runtime_manager import (
     BACKENDS_CONFIG,
     detect_best_backend,
@@ -402,6 +402,34 @@ class SettingsWindow(QWidget):
         cmd = f'Add-WindowsCapability -Online -Name "Language.OCR~~~{tag}~0.0.1.0"'
         QApplication.instance().clipboard().setText(cmd)
         self.toast.show_toast("Команда скопирована! Запустите PowerShell от админа и вставьте (Ctrl+V).", ms=3500)
+
+    def _on_recheck_ocr_lang(self):
+        """Сбрасывает кэш и на лету переключает OCR-движок при обнаружении пакета."""
+        src_lang = self.settings.get("src_lang", "en")
+        tag = get_win_ocr_tag(src_lang)
+
+        # 1. Сбрасываем кэш именно для текущего языка
+        reset_ocr_lang_cache(tag)
+
+        # 2. Опрашиваем Windows заново
+        win_eng = WindowsOcrEngine(default_lang=tag)
+        res = win_eng.check_language_support(tag)
+        ok = res[0] if (isinstance(res, tuple) and len(res) == 2) else bool(res)
+
+        if ok:
+            # Пакет обнаружен! Прячем плашку
+            self.ocr_lang_warn_frame.hide()
+            self.toast.show_toast(f"Пакет {tag} найден! Windows OCR активирован.", ms=3000)
+            
+            # Принудительно отдаем команду воркеру переключиться на быстрый Windows OCR
+            self.settings.changed.emit("ocr_engine", "windows")
+        else:
+            # Всё ещё не докачался
+            self._update_ocr_lang_warning()
+            self.toast.show_toast(
+                "Пакет пока не обнаружен. Дождитесь окончания установки в Windows и нажмите снова.", 
+                ms=3500
+            )
 
     def _update_ocr_lang_warning(self):
         """Проверяет наличие системного пакета Windows OCR и обновляет плашку."""
@@ -897,8 +925,14 @@ class SettingsWindow(QWidget):
         btn_copy_ps_cmd.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_copy_ps_cmd.clicked.connect(self._copy_powershell_ocr_cmd)
 
+        btn_recheck = QPushButton("Проверить снова")
+        btn_recheck.setObjectName("OcrSecondaryBtn")
+        btn_recheck.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_recheck.clicked.connect(self._on_recheck_ocr_lang)
+
         warn_btn_row.addWidget(btn_open_win_settings)
         warn_btn_row.addWidget(btn_copy_ps_cmd)
+        warn_btn_row.addWidget(btn_recheck)
         warn_btn_row.addStretch(1)
         warn_v.addLayout(warn_btn_row)
 

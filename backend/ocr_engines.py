@@ -40,6 +40,15 @@ HAS_WINRT = WinrtOcrEngine is not None and Language is not None
 _winrt_lock = threading.Lock()
 _lang_cache: dict[str, bool] = {}  # Простой словарь-кэш: "en-US" -> True
 
+def reset_ocr_lang_cache(tag: str | None = None):
+    """Сбрасывает кэш проверки, если пользователь только что установил язык."""
+    with _winrt_lock:
+        if tag:
+            _lang_cache.pop(tag, None)
+            _lang_cache.pop(tag.split("-")[0], None)
+        else:
+            _lang_cache.clear()
+
 class BaseOcrEngine(ABC):
     """Абстрактный интерфейс OCR-движка."""
 
