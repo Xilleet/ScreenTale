@@ -895,13 +895,16 @@ class AppController(QObject):
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            if self.settings_win.isVisible():
+            if self.settings_win.isVisible() and not self.settings_win.isMinimized():
                 self.settings_win.hide()
             else:
                 self.show_settings()
 
     def show_settings(self):
+        if self.settings_win.isMinimized():
+            self.settings_win.showNormal()
         self.settings_win.show()
+        self.settings_win.raise_()
         self.settings_win.activateWindow()
 
     # ---------- Автообновление в 1 клик ----------

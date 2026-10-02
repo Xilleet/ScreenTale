@@ -1,8 +1,19 @@
 import ctypes
 import os
 import sys
+from ctypes import wintypes
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal, qVersion
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QParallelAnimationGroup,
+    QPoint,
+    QPropertyAnimation,
+    Qt,
+    QTimer,
+    Signal,
+    qVersion,
+)
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -332,7 +343,7 @@ class SettingsWindow(QWidget):
         btn_min.setObjectName("WinBtn")
         btn_min.setToolTip("Свернуть")
         btn_min.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_min.clicked.connect(self.showMinimized)
+        btn_min.clicked.connect(self._animate_minimize)
 
         btn_close = QPushButton("✕")
         btn_close.setObjectName("WinBtnClose")
@@ -547,6 +558,7 @@ class SettingsWindow(QWidget):
         if hasattr(self, "_vram_timer"):
             self._update_vram_monitor()
             self._vram_timer.start()
+            self._play_restore_animation()
 
     def hideEvent(self, event):
         super().hideEvent(event)
@@ -1938,6 +1950,103 @@ class SettingsWindow(QWidget):
             self.on_exit()
         else:
             QApplication.instance().quit()
+
+    # ---------------- Плавная анимация сворачивания / разворачивания ----------------
+    def _animate_minimize(self):
+        """Плавный уход в панель задач (Fade-Out + Slide-Down)."""
+        if getattr(self, "_is_animating", False):
+            return
+        self._is_animating = True
+
+        self._anim_group = QParallelAnimationGroup(self)
+
+        # 1. Растворение прозрачности
+        anim_fade = QPropertyAnimation(self, b"windowOpacity")
+        anim_fade.setDuration(130)
+        anim_fade.setStartValue(self.windowOpacity())
+        anim_fade.setEndValue(0.0)
+        anim_fade.setEasingCurve(QEasingCurve.Type.InQuad)
+
+        # 2. Лёгкое смещение вниз на 15 px
+        anim_pos = QPropertyAnimation(self, b"pos")
+        anim_pos.setDuration(130)
+        start_p = self.pos()
+        anim_pos.setStartValue(start_p)
+        anim_pos.setEndValue(start_p + QPoint(0, 15))
+        anim_pos.setEasingCurve(QEasingCurve.Type.InQuad)
+
+        self._anim_group.addAnimation(anim_fade)
+        self._anim_group.addAnimation(anim_pos)
+
+        def _on_finish():
+            self.showMinimized()
+            # Возвращаем координаты на место
+            self.move(start_p)
+            self.setWindowOpacity(1.0)
+            self._is_animating = False
+
+        self._anim_group.finished.connect(_on_finish)
+        self._anim_group.start()
+
+    def _play_restore_animation(self):
+        """Плавное появление из панели задач (Fade-In + Slide-Up)."""
+        if getattr(self, "_is_animating", False):
+            return
+        self._is_animating = True
+
+        target_pos = self.pos()
+        target_opacity = 1.0
+
+        # Стартуем чуть ниже и невидимыми
+        self.setWindowOpacity(0.0)
+        self.move(target_pos + QPoint(0, 15))
+
+        self._restore_anim = QParallelAnimationGroup(self)
+
+        # 1. Нарастание прозрачности
+        anim_fade = QPropertyAnimation(self, b"windowOpacity")
+        anim_fade.setDuration(160)
+        anim_fade.setStartValue(0.0)
+        anim_fade.setEndValue(target_opacity)
+        anim_fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        # 2. Выплывание наверх в исходную позицию
+        anim_pos = QPropertyAnimation(self, b"pos")
+        anim_pos.setDuration(160)
+        anim_pos.setStartValue(self.pos())
+        anim_pos.setEndValue(target_pos)
+        anim_pos.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._restore_anim.addAnimation(anim_fade)
+        self._restore_anim.addAnimation(anim_pos)
+
+        def _on_restore_done():
+            self.setWindowOpacity(target_opacity)
+            self.move(target_pos)
+            self._is_animating = False
+
+        self._restore_anim.finished.connect(_on_restore_done)
+        self._restore_anim.start()
+
+    def changeEvent(self, event):
+        """Ловим восстановление окна из свернутого состояния."""
+        if (
+            event.type() == QEvent.Type.WindowStateChange
+            and not self.isMinimized()
+            and (event.oldState() & Qt.WindowState.WindowMinimized)
+        ):
+            self._play_restore_animation()
+        super().changeEvent(event)
+
+    def nativeEvent(self, eventType, message):
+        """Перехватываем клик по Панели Задач Windows, чтобы запустить анимацию."""
+        if eventType == b"windows_generic_MSG" and sys.platform == "win32":
+            msg = wintypes.MSG.from_address(int(message))
+            # 0x0112 = WM_SYSCOMMAND, 0xF020 = SC_MINIMIZE
+            if msg.message == 0x0112 and (msg.wParam & 0xFFF0) == 0xF020:
+                self._animate_minimize()
+                return True, 0  # Мы сами обработали команду сворачивания
+        return super().nativeEvent(eventType, message)
 
     # ---------------- перетаскивание окна (Drag) ----------------
     def mousePressEvent(self, event):
