@@ -98,21 +98,19 @@ def normalize_ocr_text(text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
 
-def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
+def _preprocess_for_ocr(img: Image.Image) -> tuple[Image.Image, float]:
     """Адаптивное увеличение картинки фильтром Ланцоша для четкости мелких шрифтов.
-    Также защищает от ограничения WinRT API (минимальный размер кадра 40x40).
+    Возвращает (обработанная_картинка, коэффициент_апскейла).
     """
     w, h = img.size
-    
-    # ФИКС: Защита от нулевого размера (иначе PIL.resize упадет с ValueError)
     if w <= 0 or h <= 0:
-        return img
+        return img, 1.0
 
     # 1. Защита от минимального размера Windows OCR (WinRT требует минимум 40x40 px)
     if w < 40 or h < 40:
         scale_min = max(40 / w, 40 / h) * 1.2
         new_size = (int(w * scale_min), int(h * scale_min))
-        return img.resize(new_size, Image.Resampling.LANCZOS)
+        return img.resize(new_size, Image.Resampling.LANCZOS), scale_min
 
     # 2. Адаптивный апскейл для мелких шрифтов
     if h <= 120:
@@ -120,10 +118,10 @@ def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
     elif h <= 250:
         scale = 1.5
     else:
-        return img
+        return img, 1.0
 
     new_size = (int(w * scale), int(h * scale))
-    return img.resize(new_size, Image.Resampling.LANCZOS)
+    return img.resize(new_size, Image.Resampling.LANCZOS), scale
 
 
 class OcrWorker(QThread):
@@ -131,8 +129,8 @@ class OcrWorker(QThread):
     state_changed = Signal(str, str)
     # доступность CUDA
     cuda_status = Signal(bool)
-    # результат чтения: (bbox, текст, контекст)
-    read_result = Signal(tuple, str, str)
+    # результат чтения: (bbox_выделения, распознанный_текст, список_блоков_с_координатами, контекст)
+    read_result = Signal(tuple, str, list, str)
     # итог переключения GPU: (success, фактически_работает_на_gpu, сообщение)
     gpu_result = Signal(bool, bool, str)
     # событие смены активного движка
@@ -327,36 +325,60 @@ class OcrWorker(QThread):
     def _do_read(self, bbox: tuple, context: str) -> None:
         if self._engine is None:
             self.read_result.emit(
-                bbox, "[OCR-модель ещё не готова, подождите несколько секунд]", context
+                bbox, "[OCR-модель ещё не готова, подождите несколько секунд]", [], context
             )
             return
 
         try:
             left, top, right, bottom = bbox
-            # ПЕРЕДАЕМ BBOX: масштаб берется именно того монитора, где выделили текст
-            scale = get_screen_scale(bbox)
+            dpi_scale = get_screen_scale(bbox)
             physical = (
-                int(left * scale),
-                int(top * scale),
-                int(right * scale),
-                int(bottom * scale),
+                int(left * dpi_scale),
+                int(top * dpi_scale),
+                int(right * dpi_scale),
+                int(bottom * dpi_scale),
             )
-            # 1. Захват экрана
+            # 1. Захват экрана (all_screens=True для мультимониторов)
             img = ImageGrab.grab(bbox=physical, all_screens=True)
 
             # 2. Адаптивная подготовка размера кадра
-            img = _preprocess_for_ocr(img)
+            img, prep_scale = _preprocess_for_ocr(img)
 
-            # 3. Замер реальной скорости распознавания
+            # 3. Распознавание с замером времени
             t_start = time.perf_counter()
-            raw_text = self._engine.read(img)
+            if hasattr(self._engine, "read_detailed"):
+                raw_text, raw_blocks = self._engine.read_detailed(img)
+            else:
+                raw_text = self._engine.read(img)
+                raw_blocks = []
             latency_ms = (time.perf_counter() - t_start) * 1000
 
             text = normalize_ocr_text(raw_text)
 
+            # 4. Пересчитываем локальные координаты строк в АБСОЛЮТНЫЕ экранные пиксели монитора
+            total_scale = prep_scale * dpi_scale
+            screen_blocks = []
+            for b in raw_blocks:
+                rx, ry, rw, rh = b["rect"]
+                abs_rect = (
+                    int(left + rx / total_scale),
+                    int(top + ry / total_scale),
+                    int(rw / total_scale),
+                    int(rh / total_scale),
+                )
+                abs_poly = [
+                    [int(left + p[0] / total_scale), int(top + p[1] / total_scale)]
+                    for p in b.get("polygon", [])
+                ]
+                screen_blocks.append({
+                    "text": b["text"],
+                    "rect": abs_rect,
+                    "polygon": abs_poly,
+                })
+
             print(
                 f"[ocr:{self._active_engine_name}] {latency_ms:.1f} ms | "
-                f"{text[:60]!r} (ctx={context})"
+                f"{text[:60]!r} (найдено строк с координатами: {len(screen_blocks)})"
             )
             vlog(
                 f"[ocr:{self._active_engine_name}] (full) {latency_ms:.1f} ms | "
@@ -364,11 +386,11 @@ class OcrWorker(QThread):
             )
 
             result_text = text if text.strip() else "[Текст не найден]"
-            self.read_result.emit(bbox, result_text, context)
+            self.read_result.emit(bbox, result_text, screen_blocks, context)
 
         except Exception as e:
             print(f"[ocr] ошибка чтения: {e}")
-            self.read_result.emit(bbox, f"[Ошибка OCR: {e}]", context)
+            self.read_result.emit(bbox, f"[Ошибка OCR: {e}]", [], context)
 
     def request_direction(self, direction: str) -> None:
         """Сменить направление текста ('horizontal' или 'vertical')."""

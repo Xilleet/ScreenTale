@@ -3,6 +3,7 @@ import ctypes
 import datetime
 import multiprocessing
 import os
+import re
 import sys
 import time
 import traceback
@@ -57,6 +58,7 @@ from backend.translators import (
     translate_online,
 )
 from backend.updater import UpdateCheckTask, UpdateDownloadWorker
+from frontend.inplace_canvas import InPlaceCanvas
 from frontend.screen_selector import ScreenSelector
 from frontend.settings_window import SettingsWindow
 from frontend.theme import apply_theme
@@ -70,6 +72,20 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "4")
 os.makedirs(_local_hf, exist_ok=True)
 
+def is_target_script(text: str, dst_lang: str) -> bool:
+    """Определяет, написан ли текст на целевом языке (чтобы не переводить собственный перевод)."""
+    if not text:
+        return False
+    if dst_lang == "ru":
+        # Кириллица
+        return bool(re.search(r"[а-яА-ЯёЁ]", text))
+    elif dst_lang in ("ja", "zh"):
+        # Иероглифы CJK / Кана
+        return bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff]", text))
+    elif dst_lang == "ko":
+        # Хангыль
+        return bool(re.search(r"[\uac00-\ud7af]", text))
+    return False
 
 class _OnlineTask(QRunnable):
     """Онлайн-перевод в пуле потоков; результаты — через сигналы контроллера."""
@@ -120,6 +136,11 @@ class AppController(QObject):
 
         # Окна
         self.trans_win = TranslateWindow(self.settings)
+        self.inplace_canvas = InPlaceCanvas()
+
+        is_streamer = bool(self.settings.get("streamer_mode", False))
+        self.inplace_canvas.set_capture_visibility(not is_streamer)
+        
         self._last_bbox = None
         self.trans_win.stop_requested.connect(lambda: self._on_hotkey("stop"))
         self.trans_win.clear_requested.connect(lambda: self._on_hotkey("clear"))
@@ -339,6 +360,10 @@ class AppController(QObject):
         if self._is_selecting:
             return
         self._is_selecting = True
+        
+        # Очищаем старый In-Place, чтобы не фотографировать его заново!
+        self.inplace_canvas.clear()
+
         self._was_trans_win_visible = self.trans_win.isVisible() and not self.trans_win.force_hidden
         if self._was_trans_win_visible:
             self.trans_win.hide()
@@ -366,9 +391,20 @@ class AppController(QObject):
         if getattr(self, "_was_trans_win_visible", False) and not self.trans_win.force_hidden:
             self.trans_win.show()
 
-    def _on_read_result(self, bbox, text, context):
-        print(f"[ctrl] read_result ctx={context}: {text[:50]!r}")
+    def _on_read_result(self, bbox, text, blocks, context):
+        print(f"[ctrl] read_result ctx={context}, блоков с координатами: {len(blocks)}: {text[:50]!r}")
         vlog(f"[ctrl] read_result (full) ctx={context}: {text!r}")
+
+        # 1. ЗАЩИТА ОТ САМОПЕРЕВОДА (проверяем только реальный текст, не системные сообщения в скобках [ )
+        src_lang = self.settings.get("src_lang", "en")
+        dst_lang = self.settings.get("dst_lang", "ru")
+        if not text.startswith("[") and src_lang != dst_lang and is_target_script(text, dst_lang):
+            vlog(f"[ctrl] На экране обнаружен готовый перевод ({dst_lang}) — пропускаем кадр")
+            return
+
+        # 2. Сохраняем блоки для In-Place
+        self._last_blocks = blocks
+
         if context == "auto":
             if text.startswith("["):
                 return
@@ -521,6 +557,7 @@ class AppController(QObject):
 
         self.trans_win.hide()
         self.trans_win.toolbar.hide()
+        self.inplace_canvas.clear()
         self._auto_paused = False
         self.trans_win.toolbar.set_pause_active(False)
 
@@ -648,6 +685,11 @@ class AppController(QObject):
                 self.trans_win.show_translation(translation)
             else:
                 self.trans_win.show_translation(f"({timestamp}) {translation}")
+                
+                # Отправляем перевод на холст In-Place
+                blocks = getattr(self, "_last_blocks", None)
+                if blocks:
+                    self.inplace_canvas.display_translation(blocks, translation)
 
             del self._pending_translations[next_seq]
             self._last_shown_seq = next_seq
@@ -773,6 +815,9 @@ class AppController(QObject):
                 m_file = self.settings.get("selected_gguf", "")
                 use_gpu = bool(self.settings.get("gpu", True))
                 self.model_manager.load("qwen", use_gpu=use_gpu, model_filename=m_file, n_threads=int(value))
+        elif key == "streamer_mode":
+            # True = скрыть от записи, False = разрешить скриншоты или в запись видео
+            self.inplace_canvas.set_capture_visibility(not bool(value))
 
     def _on_delete_model(self, engine_id):
         self.model_manager.unload()

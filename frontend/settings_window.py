@@ -482,6 +482,10 @@ class SettingsWindow(QWidget):
         else:
             self.ocr_lang_warn_frame.hide()
 
+    def _on_streamer_toggled(self, checked):
+        self.settings.set("streamer_mode", bool(checked))
+        self._saved_timer.start()
+
     def _get_current_ocr_cmd(self) -> str:
         """Генерирует точную команду PowerShell для текущего языка."""
         src_lang = self.settings.get("src_lang", "en")
@@ -778,6 +782,13 @@ class SettingsWindow(QWidget):
             "Копировать перевод в буфер обмена",
             self.autocopy_toggle,
             "Результат перевода всегда доступен по Ctrl+V."))
+        self.streamer_toggle = ToggleSwitch()
+        c2.addWidget(self._option_row(
+            "Режим стримера (скрывать перевод от OBS и скриншотов)",
+            self.streamer_toggle,
+            "Если включено — перевод виден только вам, но не попадает на стримы и скриншоты."
+        ))
+        self.streamer_toggle.toggled.connect(self._on_streamer_toggled)
         v.addWidget(card2)
         v.addStretch(1)
 
@@ -1833,6 +1844,7 @@ class SettingsWindow(QWidget):
         self._on_setting_changed("hotkeys", self.settings.get("hotkeys"))
         self._on_setting_changed("verbose_log", self.settings.get("verbose_log"))
         self._on_setting_changed("auto_delay_ms", self.settings.get("auto_delay_ms", 800))
+        self._on_setting_changed("streamer_mode", self.settings.get("streamer_mode", False))
         is_gpu = bool(self.settings.get("gpu"))
         self.gpu_toggle.blockSignals(True)
         self.gpu_toggle.setChecked(is_gpu)
@@ -1931,6 +1943,10 @@ class SettingsWindow(QWidget):
             self.outline_toggle.setChecked(bool(value))
             self.outline_toggle.blockSignals(False)
             self._update_preview_outline(bool(value))
+        elif key == "streamer_mode":
+            self.streamer_toggle.blockSignals(True)
+            self.streamer_toggle.setChecked(bool(value))
+            self.streamer_toggle.blockSignals(False)
 
     # ---------------- служебное ----------------
     def resizeEvent(self, e):

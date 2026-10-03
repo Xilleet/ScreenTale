@@ -46,6 +46,7 @@ DEFAULTS = {
     "verbose_log": False,
     "update_snooze_until": "",
     "welcome_completed": False,
+    "streamer_mode": False,
     "hotkeys": {
         # mods — флаги RegisterHotKey, vk — виртуальный код Windows
         "single":        {"label": "Alt+Q",  "mods": 0x0001, "vk": 0x51},
