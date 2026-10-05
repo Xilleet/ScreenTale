@@ -18,42 +18,46 @@ class InPlaceBlock:
     font_size: int
 
 
-def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 2.0) -> list[dict]:
-    """Объединяет все прочитанные строки одного абзаца/диалога в единый монолитный блок.
-    Гарантирует, что подложка накроет весь исходный текст целиком без дыр снизу.
+def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 1.8) -> list[dict]:
+    """Группирует близкие строки в отдельные смысловые бабблы по пространственной близости.
+    Текст в левом углу и текст в правом углу сформируют РАЗНЫЕ независимые плашки!
     """
     if not blocks:
         return []
 
-    # 1. Если пришла всего одна строка — просто оборачиваем её в QRect
-    if len(blocks) == 1:
-        b = blocks[0]
-        x, y, w, h = b["rect"]
-        return [{"text": b["text"], "rect": QRect(x, y, w, h)}]
-
-    # 2. Сортируем строки по вертикали (сверху вниз)
     sorted_blocks = sorted(blocks, key=lambda b: b["rect"][1])
+    clusters = []
 
-    # 3. Вычисляем общий охватывающий прямоугольник (Bounding Box Envelope)
-    # для всех строк, чтобы плашка гарантированно перекрыла весь оригинальный абзац
-    all_x = [b["rect"][0] for b in sorted_blocks]
-    all_y = [b["rect"][1] for b in sorted_blocks]
-    all_right = [b["rect"][0] + b["rect"][2] for b in sorted_blocks]
-    all_bottom = [b["rect"][1] + b["rect"][3] for b in sorted_blocks]
+    for b in sorted_blocks:
+        bx, by, bw, bh = b["rect"]
+        placed = False
+        for c in clusters:
+            cx, cy, cw, ch = c["rect"]
+            c_bottom = cy + ch
+            v_gap = by - c_bottom
+            avg_h = (ch + bh) / 2
+            h_overlap = max(0, min(cx + cw, bx + bw) - max(cx, bx))
+            min_w = min(cw, bw)
 
-    min_x = min(all_x)
-    min_y = min(all_y)
-    total_w = max(all_right) - min_x
-    total_h = max(all_bottom) - min_y
-
-    # Склеиваем весь текст в одну связную фразу для отображения
-    combined_text = " ".join(b["text"].strip() for b in sorted_blocks if b["text"].strip())
+            # Если строка лежит строго под бабблом и перекрывается по ширине
+            if -avg_h * 0.5 <= v_gap <= avg_h * max_v_gap_ratio and (h_overlap / max(min_w, 1)) > 0.2:
+                c["texts"].append(b["text"])
+                nx = min(cx, bx)
+                ny = min(cy, by)
+                nw = max(cx + cw, bx + bw) - nx
+                nh = max(cy + ch, by + bh) - ny
+                c["rect"] = [nx, ny, nw, nh]
+                placed = True
+                break
+        if not placed:
+            clusters.append({"texts": [b["text"]], "rect": list(b["rect"])})
 
     return [
         {
-            "text": combined_text,
-            "rect": QRect(int(min_x), int(min_y), int(total_w), int(total_h)),
+            "text": " ".join(c["texts"]),
+            "rect": QRect(c["rect"][0], c["rect"][1], c["rect"][2], c["rect"][3]),
         }
+        for c in clusters
     ]
 
 
@@ -116,13 +120,6 @@ class InPlaceCanvas(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        # if sys.platform == "win32":
-        #    try:
-        #        # 0x00000011 исключает окно из любого захвата экрана Windows
-        #        ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), 0x00000011)
-        #    except Exception:
-        #        pass
-        self.set_capture_visibility(True)
 
         screen = QApplication.primaryScreen()
         if screen:
@@ -135,64 +132,63 @@ class InPlaceCanvas(QWidget):
         self._fade_timer.setSingleShot(True)
         self._fade_timer.timeout.connect(self.clear)
 
-# Окно видно глазам, но для захвата экрана (OCR / ImageGrab) оно невидимо!
+        # закрытие по правой кнопке мыши
+        self._mouse_timer = QTimer(self)
+        self._mouse_timer.setInterval(25)
+        self._mouse_timer.timeout.connect(self._check_mouse_dismiss)
+        self._mouse_timer.start()
+
+        # Окно видно глазам, но для захвата экрана (OCR / ImageGrab) оно невидимо!
         self.set_capture_visibility(False)
 
+    def _check_mouse_dismiss(self):
+        """ПКМ (правая кнопка мыши) мгновенно убирает перевод с экрана."""
+        if sys.platform != "win32":
+            return
+        # 0x02 = VK_RBUTTON
+        is_r_down = bool(ctypes.windll.user32.GetAsyncKeyState(0x02) & 0x8000)
+        if is_r_down and self.active_blocks:
+            self.clear()
+
     def display_translation(self, raw_blocks: list[dict], translated_text: str):
-        """Принимает сырые строки OCR и отображает матовую плашку ровно поверх оригинала."""
+        """Отрисовывает перевод: каждый независимый баббл в своём углу экрана!"""
         if not raw_blocks or not translated_text.strip():
             return
 
-        # 1. Получаем единый блок, накрывающий весь исходный абзац целиком
         clusters = cluster_lines(raw_blocks)
         if not clusters:
             return
 
-        target_rect = clusters[0]["rect"]
+        new_blocks = []
+        # Если блок один — накрываем его целиком переводом
+        if len(clusters) == 1:
+            padded = clusters[0]["rect"].adjusted(-8, -6, 8, 6)
+            bg = sample_background_color(padded)
+            bg.setAlpha(245)
+            f_sz = find_optimal_font_size(translated_text, padded.width() - 16, padded.height() - 10)
+            metrics = QFontMetrics(QFont("Segoe UI", f_sz, QFont.Weight.Bold))
+            calc = metrics.boundingRect(QRect(0, 0, padded.width() - 16, 0), Qt.TextFlag.TextWordWrap, translated_text)
+            if calc.height() + 16 > padded.height():
+                padded.setHeight(calc.height() + 16)
+            new_blocks.append(InPlaceBlock(rect=padded, text=translated_text, bg_color=bg, font_size=f_sz))
+        else:
+            # Если несколько бабблов (например, квест слева и диалог справа)
+            lines = [ln.strip() for ln in translated_text.split("\n") if ln.strip()]
+            for i, c in enumerate(clusters):
+                txt = lines[i] if i < len(lines) else (translated_text if i == 0 else "")
+                if not txt:
+                    continue
+                padded = c["rect"].adjusted(-6, -4, 6, 4)
+                bg = sample_background_color(padded)
+                bg.setAlpha(245)
+                f_sz = find_optimal_font_size(txt, padded.width() - 12, padded.height() - 8)
+                new_blocks.append(InPlaceBlock(rect=padded, text=txt, bg_color=bg, font_size=f_sz))
 
-        # Добавляем щедрый отступ (8px по бокам, 6px сверху/снизу) для идеального перекрытия
-        padded_rect = target_rect.adjusted(-8, -6, 8, 6)
-
-        # 2. Замеряем цвет фона под текстом (Хамелеон)
-        bg_color = sample_background_color(padded_rect)
-        # Делаем плотную непрозрачность 245/255, чтобы буквы под ней не просвечивали
-        bg_color.setAlpha(245)
-
-        # 3. Подбираем идеальный кегль шрифта под размер рамки
-        font_size = find_optimal_font_size(
-            translated_text, padded_rect.width() - 16, padded_rect.height() - 10
-        )
-
-        # 4. Если русский перевод длиннее оригинала — мягко расширяем плашку вниз
-        metrics = QFontMetrics(QFont("Segoe UI", font_size, QFont.Weight.Bold))
-        calc_rect = metrics.boundingRect(
-            QRect(0, 0, padded_rect.width() - 16, 0),
-            Qt.TextFlag.TextWordWrap,
-            translated_text
-        )
-        
-        needed_height = calc_rect.height() + 16
-        if needed_height > padded_rect.height():
-            padded_rect.setHeight(needed_height)
-
-        print(
-            f"[inplace] Отрисовка на экране: оригинал {target_rect} -> плашка {padded_rect}, "
-            f"шрифт={font_size}px, цвет={bg_color.name()}"
-        )
-
-        self.active_blocks = [
-            InPlaceBlock(
-                rect=padded_rect,
-                text=translated_text,
-                bg_color=bg_color,
-                font_size=font_size,
-            )
-        ]
-
+        self.active_blocks = new_blocks
         self.show()
         self.raise_()
         self.update()
-        self._fade_timer.start(12000)  # Держим перевод 12 секунд
+        self._fade_timer.start(12000)
 
     def clear(self):
         """Очистить холст."""
@@ -201,11 +197,16 @@ class InPlaceCanvas(QWidget):
 
     def set_capture_visibility(self, visible_to_capture: bool):
         """Переключает видимость для сторонних программ (ShareX, OBS) на лету со строгой типизацией x64."""
+        
+        # Защита от холостых и повторных вызовов
+        if getattr(self, "_current_capture_visibility", None) == visible_to_capture:
+            return  # Состояние не изменилось — выходим без спама!
+        self._current_capture_visibility = visible_to_capture
+
         if sys.platform != "win32":
             return
         try:
             user32 = ctypes.windll.user32
-            # Строгая типизация для 64-битной Windows (защита от тихого сбоя HWND)
             user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
             user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
 

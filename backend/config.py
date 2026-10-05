@@ -45,6 +45,7 @@ DEFAULTS = {
     "cpu_threads": 0,
     "verbose_log": False,
     "update_snooze_until": "",
+    "overlay_mode": "chat",
     "welcome_completed": False,
     "streamer_mode": False,
     "hotkeys": {
@@ -150,7 +151,7 @@ class SettingsManager(QObject):
         for key in ("theme", "font_size", "opacity", "gpu", "auto_copy",
                     "auto_delay_ms", "verbose_log", "ocr_engine", "ocr_direction",
                     "welcome_completed", "selected_gguf", "src_lang", "dst_lang", 
-                    "recent_pairs", "cpu_threads", "text_outline"):
+                    "recent_pairs", "cpu_threads", "text_outline", "streamer_mode", "overlay_mode"):
             if key in data:
                 self._values[key] = data[key]
 

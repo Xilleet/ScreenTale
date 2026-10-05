@@ -9,6 +9,7 @@ from PySide6.QtCore import (
     QParallelAnimationGroup,
     QPoint,
     QPropertyAnimation,
+    QSize,
     Qt,
     QTimer,
     Signal,
@@ -47,6 +48,7 @@ from backend.runtime_manager import (
 )
 from backend.translators import ENGINE_LABELS
 from frontend.theme import PALETTE, apply_theme
+from frontend.translate_window import _load_ui_icon
 from frontend.widgets import (
     BusyBar,
     HotkeyRecorder,
@@ -403,6 +405,32 @@ class SettingsWindow(QWidget):
         v.addLayout(header_layout)
         v.addSpacing(14)
 
+        # ========================================================
+        # Глобальный переключатель режимов (над меню разделов)
+        # ========================================================
+        self.mode_seg = SegmentedControl([
+            ("chat", ""),
+            ("inplace", "")
+        ])
+        self.mode_seg.valueChanged.connect(self._on_overlay_mode_changed)
+
+        if "chat" in self.mode_seg._buttons:
+            btn = self.mode_seg._buttons["chat"]
+            btn.setToolTip("«Окно-чат» — классическое окно со скроллом и историей переводов.")
+            btn.setIcon(_load_ui_icon("chat_32.png"))
+            btn.setIconSize(QSize(24, 24))
+
+        if "inplace" in self.mode_seg._buttons:
+            btn = self.mode_seg._buttons["inplace"]
+            btn.setToolTip("«In-Place» — нативное замещение текста прямо в игре поверх оригинала (клик ПКМ закрывает перевод).")
+            btn.setIcon(_load_ui_icon("inplace_32.png"))
+            btn.setIconSize(QSize(24, 24))
+
+        v.addWidget(self.mode_seg)
+        v.addSpacing(10)
+
+        # ---------------- Меню разделов ----------------
+
         self.nav = QListWidget()
         self.nav.setObjectName("Nav")
         for name in ("Общие", "Перевод", "Горячие клавиши", "Продвинутые", "О программе"):
@@ -710,6 +738,9 @@ class SettingsWindow(QWidget):
     def _page_general(self):
         page, v = self._page()
 
+        # ========================================================
+        # Карточка: Внешний вид
+        # ========================================================
         card, cv = self._card("Внешний вид")
 
         self.theme_seg = SegmentedControl([
@@ -802,6 +833,10 @@ class SettingsWindow(QWidget):
         apply_theme(QApplication.instance(), ident)
         self._update_preview_font(self.font_slider.value())  # перечитать цвет текста превью
         self.settings.set("theme", ident)
+        self._saved_timer.start()
+
+    def _on_overlay_mode_changed(self, mode):
+        self.settings.set("overlay_mode", mode)
         self._saved_timer.start()
 
     def _on_font_slider(self, value):
@@ -1865,6 +1900,7 @@ class SettingsWindow(QWidget):
         self._update_lang_lock_state()
         self._update_ocr_lang_warning()
         self._on_setting_changed("text_outline", self.settings.get("text_outline", False))
+        self.mode_seg.set_value(self.settings.get("overlay_mode", "chat"))
 
     def _on_setting_changed(self, key, value):
         if key == "font_size":
@@ -1947,6 +1983,8 @@ class SettingsWindow(QWidget):
             self.streamer_toggle.blockSignals(True)
             self.streamer_toggle.setChecked(bool(value))
             self.streamer_toggle.blockSignals(False)
+        elif key == "overlay_mode":
+            self.mode_seg.set_value(value)
 
     # ---------------- служебное ----------------
     def resizeEvent(self, e):

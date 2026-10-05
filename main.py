@@ -140,7 +140,7 @@ class AppController(QObject):
 
         is_streamer = bool(self.settings.get("streamer_mode", False))
         self.inplace_canvas.set_capture_visibility(not is_streamer)
-        
+
         self._last_bbox = None
         self.trans_win.stop_requested.connect(lambda: self._on_hotkey("stop"))
         self.trans_win.clear_requested.connect(lambda: self._on_hotkey("clear"))
@@ -148,6 +148,7 @@ class AppController(QObject):
         self.trans_win.retry_requested.connect(self._retry_last_translation)
         self.settings_win = SettingsWindow(self.settings, self.hotkeys, on_exit=self.exit_app)
         self._auto_paused = False
+        self._is_translating = False  # <--- Замок: защищает от очередей из 10 дублей!
 
         # Убиваем зависшие сервера от прошлых крашей
         if self.settings.get("translator") == "qwen":
@@ -406,6 +407,9 @@ class AppController(QObject):
         self._last_blocks = blocks
 
         if context == "auto":
+            if getattr(self, "_is_translating", False):
+                vlog("[ctrl] Переводчик занят генерацией — пропускаем промежуточный такт")
+                return
             if text.startswith("["):
                 return
             norm = " ".join(text.lower().split())
@@ -588,6 +592,8 @@ class AppController(QObject):
         if not text.strip():
             return
 
+        self._is_translating = True
+
         # Получаем выбранную языковую пару из настроек
         src_lang = self.settings.get("src_lang", "en")
         dst_lang = self.settings.get("dst_lang", "ru")
@@ -681,15 +687,23 @@ class AppController(QObject):
                 self._last_shown_seq = next_seq
                 continue
 
+            self._is_translating = False
+
             if translation.startswith("["):
                 self.trans_win.show_translation(translation)
             else:
-                self.trans_win.show_translation(f"({timestamp}) {translation}")
-                
-                # Отправляем перевод на холст In-Place
-                blocks = getattr(self, "_last_blocks", None)
-                if blocks:
-                    self.inplace_canvas.display_translation(blocks, translation)
+                mode = self.settings.get("overlay_mode", "chat")
+                if mode == "inplace":
+                    # Режим In-Place: окно чата скрыто, рисуем прямо на игре!
+                    self.trans_win.hide()
+                    blocks = getattr(self, "_last_blocks", None)
+                    if blocks:
+                        self.inplace_canvas.display_translation(blocks, translation)
+                else:
+                    # Режим Чат: окно активно, плашка на экране выключена
+                    self.inplace_canvas.clear()
+                    self.inplace_canvas.hide()
+                    self.trans_win.show_translation(f"({timestamp}) {translation}")
 
             del self._pending_translations[next_seq]
             self._last_shown_seq = next_seq
@@ -723,6 +737,7 @@ class AppController(QObject):
         )
         self.trans_win.set_status("busy", "Переключение на офлайн…")
         self.settings.set("translator", available_engine)
+        self._is_translating = False
 
     def _on_model_load_started(self):
         self._model_loading = True
@@ -818,6 +833,13 @@ class AppController(QObject):
         elif key == "streamer_mode":
             # True = скрыть от записи, False = разрешить скриншоты или в запись видео
             self.inplace_canvas.set_capture_visibility(not bool(value))
+        elif key == "overlay_mode":
+            if value == "inplace":
+                self.trans_win.hide()
+            else:
+                self.inplace_canvas.clear()
+                self.inplace_canvas.hide()
+                self.trans_win.show()
 
     def _on_delete_model(self, engine_id):
         self.model_manager.unload()

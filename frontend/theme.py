@@ -150,7 +150,8 @@ QPushButton#SegBtn {
     border-radius: 6px; 
     padding: 6px 10px; 
     color: @text_dim; 
-    min-width: 74px; 
+    min-width: 28px;
+    min-height: 26px; 
 }
 QPushButton#SegBtn:hover { color: @text; }
 QPushButton#SegBtn:checked { background: @bg_hover; color: @text; font-weight: 600; }
