@@ -37,6 +37,12 @@ from PySide6.QtWidgets import (
 
 from backend.config import APP_VERSION, get_app_dir
 from backend.hotkeys import HotkeyManager
+from backend.i18n import (
+    detect_system_ui_lang,
+    get_available_ui_languages,
+    load_locale,
+    t,
+)
 from backend.languages import LANGUAGES, get_lang_name, get_win_ocr_tag
 from backend.logging_setup import set_verbose
 from backend.ocr_engines import WindowsOcrEngine, reset_ocr_lang_cache
@@ -67,13 +73,15 @@ TRANSLATORS = [
     ("qwen", "LLM"),
 ]
 
-TRANSLATOR_HINTS = {
-    "google": "Онлайн-сервис Google. Требуется интернет, качество хорошее.",
-    "mymemory": "Онлайн-сервис MyMemory. Есть лимиты запросов, качество среднее.",
-    "opus": "Локальная модель Opus-MT (~300 МБ). Только en→ru, работает офлайн.",
-    "nllb": "Локальная модель NLLB-200 (~2.5 ГБ). Работает офлайн, качество выше.",
-    "qwen": "Локальная нейросеть (GGUF). Работает полностью офлайн на вашей видеокарте или процессоре через движок llama.cpp.",
-}
+def get_translator_hint(ident: str, default: str = "") -> str:
+    hints = {
+        "google": t("hint.engine.google", "Онлайн-сервис Google. Требуется интернет, качество хорошее."),
+        "mymemory": t("hint.engine.mymemory", "Онлайн-сервис MyMemory. Есть лимиты запросов, качество среднее."),
+        "opus": t("hint.engine.opus", "Локальная модель Opus-MT (~300 МБ). Только en→ru, работает офлайн."),
+        "nllb": t("hint.engine.nllb", "Локальная модель NLLB-200 (~2.5 ГБ). Работает офлайн, качество выше."),
+        "qwen": t("hint.engine.qwen", "Локальная нейросеть (GGUF). Работает полностью офлайн на вашей видеокарте или процессоре через движок llama.cpp."),
+    }
+    return hints.get(ident, default)
 
 OCR_ENGINES = [
     ("windows", "Windows OCR"),
@@ -81,11 +89,13 @@ OCR_ENGINES = [
     ("rapidocr", "RapidOCR"),
 ]
 
-OCR_HINTS = {
-    "windows": "Нативный системный движок Windows 10/11. Молниеносное чтение (~15 мс), 0 МБ VRAM.",
-    "easyocr": "Классический движок на PyTorch. Задержка ~500 мс.",
-    "rapidocr": "Легковесный ONNX-движок. Высокая точность на сложных стилизованных шрифтах, иероглифах и манге.",
-}
+def get_ocr_hint(ident: str, default: str = "") -> str:
+    hints = {
+        "windows": t("hint.ocr.windows", "Нативный системный движок Windows 10/11. Молниеносное чтение (~15 мс), 0 МБ VRAM."),
+        "easyocr": t("hint.ocr.easyocr", "Классический движок на PyTorch. Задержка ~500 мс."),
+        "rapidocr": t("hint.ocr.rapidocr", "Легковесный ONNX-движок. Высокая точность на сложных стилизованных шрифтах, иероглифах и манге."),
+    }
+    return hints.get(ident, default)
 
 OCR_DIRECTIONS = [
     ("horizontal", "→  Горизонтальный"),
@@ -247,15 +257,17 @@ class SettingsWindow(QWidget):
     clear_all_cache_requested = Signal()
     install_runtime_requested = Signal(str)
 
-    HOTKEY_ACTIONS = (
-        ("single", "Перевести выделенную область"),
-        ("auto", "Авто-перевод: вкл/выкл"),
-        ("pause", "Пауза авто-перевода"),
-        ("toggle_window", "Показать/скрыть окно перевода"),
-        ("stop", "Остановить текущий перевод"),
-        ("clear", "Очистить историю переводов"),
-        ("ghost", "Сквозной клик (Ghost mode): вкл/выкл"),
-    )
+    @property
+    def HOTKEY_ACTIONS(self):
+        return (
+            ("single", t("hotkey.single", "Перевести выделенную область")),
+            ("auto", t("hotkey.auto", "Авто-перевод: вкл/выкл")),
+            ("pause", t("hotkey.pause", "Пауза авто-перевода")),
+            ("toggle_window", t("hotkey.toggle_window", "Показать/скрыть окно перевода")),
+            ("stop", t("hotkey.stop", "Остановить текущий перевод")),
+            ("clear", t("hotkey.clear", "Очистить историю переводов")),
+            ("ghost", t("hotkey.ghost", "Сквозной клик (Ghost mode): вкл/выкл")),
+        )
 
     def __init__(self, settings, hotkeys: HotkeyManager, on_exit=None, hide_on_close=True):
         super().__init__()
@@ -396,7 +408,7 @@ class SettingsWindow(QWidget):
 
         title = QLabel("ScreenTale")
         title.setObjectName("AppTitle")
-        ver = QLabel(f"версия {APP_VERSION}")
+        ver = QLabel(f"{t('sidebar.version', 'версия')} {APP_VERSION}")
         ver.setObjectName("Version")
 
         text_layout.addWidget(title)
@@ -434,29 +446,38 @@ class SettingsWindow(QWidget):
 
         self.nav = QListWidget()
         self.nav.setObjectName("Nav")
-        for name in ("Общие", "Перевод", "Горячие клавиши", "Продвинутые", "О программе"):
+        nav_names = (
+            t("sidebar.general", "Общие"),
+            t("sidebar.translation", "Перевод"),
+            t("sidebar.hotkeys", "Горячие клавиши"),
+            t("sidebar.advanced", "Продвинутые"),
+            t("sidebar.about", "О программе"),
+        )
+        for name in nav_names:
             self.nav.addItem(QListWidgetItem(name))
         v.addWidget(self.nav, 1)
 
         # ========================================================
         # Выбор игры для привязки (Discord-Style)
         # ========================================================
-        self.btn_game_profile = QPushButton("Привязать к игре ▾")
+        self.btn_game_profile = QPushButton(t("sidebar.pin_game", "Привязать к игре ▾"))
         self.btn_game_profile.setObjectName("Ghost")
         self.btn_game_profile.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_game_profile.setToolTip("Привязать оверлей к окну конкретной игры (авто-скрытие при Alt+Tab)")
+        self.btn_game_profile.setToolTip(t("sidebar.pin_game_tip", "Привязать оверлей к окну игры (авто-скрытие при Alt+Tab)"))
         self.btn_game_profile.clicked.connect(self._show_game_picker_menu)
         v.addWidget(self.btn_game_profile)
         v.addSpacing(4)
 
-        btn_exit = QPushButton("Выйти из программы")
-        btn_exit.setObjectName("Danger")
-        btn_exit.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_exit.clicked.connect(self._handle_exit)
-        v.addWidget(btn_exit)
-        return frame
+        # ВЫБОР ЯЗЫКА ИНТЕРФЕЙСА
+        self.btn_ui_lang = QPushButton("Язык / Language ▾")
+        self.btn_ui_lang.setObjectName("Ghost")
+        self.btn_ui_lang.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ui_lang.setToolTip("Сменить язык интерфейса программы / Change UI language")
+        self.btn_ui_lang.clicked.connect(self._show_ui_lang_menu)
+        v.addWidget(self.btn_ui_lang)
+        v.addSpacing(6)
 
-        btn_exit = QPushButton("Выйти из программы")
+        btn_exit = QPushButton(t("sidebar.exit", "Выйти из программы"))
         btn_exit.setObjectName("Danger")
         btn_exit.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_exit.clicked.connect(self._handle_exit)
@@ -598,7 +619,8 @@ class SettingsWindow(QWidget):
             total_gb = total_b / (1024 ** 3)
             pct = min(int((used_b / max(total_b, 1)) * 100), 100)
             name_str = f" · {gpu_name}" if gpu_name else ""
-            self.lbl_vram_text.setText(f"Видеопамять (VRAM): {used_gb:.1f} / {total_gb:.1f} ГБ ({pct}%){name_str}")
+            vram_lbl = t("ui.trans.vram_label", "Видеопамять (VRAM):")
+            self.lbl_vram_text.setText(f"{vram_lbl} {used_gb:.1f} / {total_gb:.1f} ГБ ({pct}%){name_str}")
             self.vram_bar.set_value(pct)
             self.vram_widget.show()
         else:
@@ -615,6 +637,38 @@ class SettingsWindow(QWidget):
         super().hideEvent(event)
         if hasattr(self, "_vram_timer"):
             self._vram_timer.stop()
+
+    def _populate_lang_combos(self):
+        """Заполняет комбобоксы языков названиями на текущем языке интерфейса (EN или RU)."""
+        cur_src = self.combo_src_lang.currentData() or self.settings.get("src_lang", "en")
+        cur_dst = self.combo_dst_lang.currentData() or self.settings.get("dst_lang", "ru")
+
+        self.combo_src_lang.blockSignals(True)
+        self.combo_dst_lang.blockSignals(True)
+        self.combo_src_lang.clear()
+        self.combo_dst_lang.clear()
+
+        # Определяем текущий язык интерфейса
+        ui_lang = self.settings.get("ui_lang", "auto")
+        is_en = (detect_system_ui_lang() == "en") if ui_lang == "auto" else (ui_lang == "en")
+
+        for code, info in LANGUAGES.items():
+            # На английском интерфейсе пишем 'English', 'Japanese', на русском — 'Английский', 'Японский'
+            name = info.get("name_en", info["name"]) if is_en else info["name"]
+            item_text = f"[{code.upper()}]  {name}"
+            self.combo_src_lang.addItem(item_text, code)
+            self.combo_dst_lang.addItem(item_text, code)
+
+        # Восстанавливаем выбранные пары
+        idx_src = self.combo_src_lang.findData(cur_src)
+        idx_dst = self.combo_dst_lang.findData(cur_dst)
+        if idx_src >= 0:
+            self.combo_src_lang.setCurrentIndex(idx_src)
+        if idx_dst >= 0:
+            self.combo_dst_lang.setCurrentIndex(idx_dst)
+
+        self.combo_src_lang.blockSignals(False)
+        self.combo_dst_lang.blockSignals(False)
 
     def _on_lang_combo_changed(self):
         src = self.combo_src_lang.currentData()
@@ -697,17 +751,24 @@ class SettingsWindow(QWidget):
         h.setContentsMargins(0, 4, 0, 4)
         h.setSpacing(8)
 
+        # Переводим бейдж и описание под конкретную модель из каталога
+        m_id = item.get("id", "")
+        key_id = "hymt" if "hy" in m_id else ("qwen" if "qwen" in m_id else ("sakura" if "sakura" in m_id else m_id))
+        badge_text = t(f"model.{key_id}.badge", item.get("badge", ""))
+        desc_text = t(f"model.{key_id}.desc", item.get("desc", ""))
+
         left = QVBoxLayout()
         left.setSpacing(2)
+
         t_row = QHBoxLayout()
         t_lbl = QLabel(f"<b>{item['title']}</b> ({item['approx_size']})")
-        b_lbl = QLabel(item["badge"])
+        b_lbl = QLabel(badge_text)
         b_lbl.setStyleSheet("color: #9c9388; font-size: 11px;")
         t_row.addWidget(t_lbl)
         t_row.addWidget(b_lbl)
         t_row.addStretch(1)
 
-        d_lbl = QLabel(item["desc"])
+        d_lbl = QLabel(desc_text)
         d_lbl.setObjectName("Hint")
         d_lbl.setWordWrap(True)
 
@@ -715,12 +776,12 @@ class SettingsWindow(QWidget):
         left.addWidget(d_lbl)
         h.addLayout(left, 1)
 
-        btn_dl = QPushButton("⬇ Скачать")
+        btn_dl = QPushButton(t("btn.download", "⬇ Скачать"))
         btn_dl.setObjectName("Ghost")
         btn_dl.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_dl.clicked.connect(lambda _=False, it=item: self.download_gguf_requested.emit(it))
 
-        btn_del = QPushButton("Удалить")
+        btn_del = QPushButton(t("btn.delete", "Удалить"))
         btn_del.setObjectName("Danger")
         btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_del.clicked.connect(lambda _=False, fn=item["filename"]: self._confirm_delete_gguf(fn))
@@ -760,22 +821,22 @@ class SettingsWindow(QWidget):
         # ========================================================
         # Карточка: Внешний вид
         # ========================================================
-        card, cv = self._card("Внешний вид")
+        card, cv = self._card(t("ui.general.theme_title", "Внешний вид"))
 
         self.theme_seg = SegmentedControl([
-            ("dark", "Янтарная"),
-            ("dark_classic", "Тёмная"),
-            ("light", "Светлая")
+            ("dark", t("theme.amber", "Янтарная")),
+            ("dark_classic", t("theme.dark", "Тёмная")),
+            ("light", t("theme.light", "Светлая"))
         ])
         self.theme_seg.setMinimumWidth(260)
-        cv.addWidget(self._option_row("Тема оформления", self.theme_seg))
+        cv.addWidget(self._option_row(t("ui.general.theme", "Тема оформления"), self.theme_seg))
         self.theme_seg.valueChanged.connect(self._on_theme_changed)
         frow = QWidget()
         frow.setObjectName("Row")
         fh = QHBoxLayout(frow)
         fh.setContentsMargins(0, 0, 0, 0)
         fh.setSpacing(10)
-        fh.addWidget(QLabel("Размер шрифта"))
+        fh.addWidget(QLabel(t("ui.general.font_size", "Размер шрифта")))
         fh.addStretch(1)
         self.font_slider = QSlider(Qt.Orientation.Horizontal)
         self.font_slider.setRange(10, 28)
@@ -801,9 +862,9 @@ class SettingsWindow(QWidget):
 
         self.outline_toggle = ToggleSwitch()
         cv.addWidget(self._option_row(
-            "Контрастная обводка текста",
+            t("ui.general.outline", "Контрастная обводка текста"),
             self.outline_toggle,
-            "Тонкий темный контур букв для 100% читаемости на снегу и ярком фоне игры при высокой прозрачности."
+            t("ui.general.outline_hint", "Тонкий темный контур букв...")
         ))
 
         orow = QWidget()
@@ -811,7 +872,7 @@ class SettingsWindow(QWidget):
         oh = QHBoxLayout(orow)
         oh.setContentsMargins(0, 0, 0, 0)
         oh.setSpacing(10)
-        oh.addWidget(QLabel("Прозрачность окна перевода"))
+        oh.addWidget(QLabel(t("ui.general.opacity", "Прозрачность окна перевода")))
         oh.addStretch(1)
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(40, 100)
@@ -826,17 +887,18 @@ class SettingsWindow(QWidget):
 
         v.addWidget(card)
 
-        card2, c2 = self._card("Поведение")
+        card2, c2 = self._card(t("ui.general.behavior_title", "Поведение"))
         self.autocopy_toggle = ToggleSwitch()
         c2.addWidget(self._option_row(
-            "Копировать перевод в буфер обмена",
+            t("ui.general.autocopy", "Копировать перевод в буфер обмена"),
             self.autocopy_toggle,
-            "Результат перевода всегда доступен по Ctrl+V."))
+            t("ui.general.autocopy_hint", "Результат перевода всегда доступен по Ctrl+V.")
+        ))
         self.streamer_toggle = ToggleSwitch()
         c2.addWidget(self._option_row(
-            "Режим стримера (скрывать перевод от OBS и скриншотов)",
+            t("ui.general.streamer_mode", "Режим стримера (скрывать перевод от OBS и скриншотов)"),
             self.streamer_toggle,
-            "Если включено — перевод виден только вам, но не попадает на стримы и скриншоты."
+            t("ui.general.streamer_hint", "Если включено — перевод виден только вам, но не попадает на стримы и скриншоты.")
         ))
         self.streamer_toggle.toggled.connect(self._on_streamer_toggled)
         v.addWidget(card2)
@@ -901,7 +963,7 @@ class SettingsWindow(QWidget):
         # ========================================================
         # Карточка 0: Языковая пара (Any-to-Any)
         # ========================================================
-        card_lang, c_lang = self._card("Языковая пара")
+        card_lang, c_lang = self._card(t("ui.trans.pair_title", "Языковая пара"))
 
         # Подсказка о блокировке для Opus-MT
         self.lbl_lang_lock_hint = QLabel("🔒 Opus-MT поддерживает только перевод с английского на русский (EN ➔ RU)")
@@ -920,7 +982,7 @@ class SettingsWindow(QWidget):
         # 1. Селектор исходного языка (С какого читаем)
         v_src = QVBoxLayout()
         v_src.setSpacing(4)
-        lbl_src = QLabel("Исходный язык:")
+        lbl_src = QLabel(t("ui.trans.src_lang", "Исходный язык:"))
         lbl_src.setObjectName("Hint")
         self.combo_src_lang = QComboBox()
         self.combo_src_lang.setObjectName("LangCombo")
@@ -950,7 +1012,7 @@ class SettingsWindow(QWidget):
         # 3. Селектор целевого языка (На какой переводим)
         v_dst = QVBoxLayout()
         v_dst.setSpacing(4)
-        lbl_dst = QLabel("Целевой язык:")
+        lbl_dst = QLabel(t("ui.trans.dst_lang", "Целевой язык:"))
         lbl_dst.setObjectName("Hint")
         self.combo_dst_lang = QComboBox()
         self.combo_dst_lang.setObjectName("LangCombo")
@@ -970,10 +1032,7 @@ class SettingsWindow(QWidget):
         v_dst.addWidget(self.combo_dst_lang)
 
         # Заполняем оба списка 12 языками
-        for code, info in LANGUAGES.items():
-            item_text = f"[{code.upper()}]  {info['name']}"
-            self.combo_src_lang.addItem(item_text, code)
-            self.combo_dst_lang.addItem(item_text, code)
+        self._populate_lang_combos()
 
         p_lay.addLayout(v_src, 1)
         p_lay.addWidget(self.btn_swap_langs, 0, Qt.AlignmentFlag.AlignBottom)
@@ -1103,7 +1162,7 @@ class SettingsWindow(QWidget):
         # ========================================================
         # Карточка 1: Движок перевода
         # ========================================================
-        card, cv = self._card("Движок перевода")
+        card, cv = self._card(t("ui.trans.engine_title", "Движок перевода"))
         self.translator_seg = SegmentedControl(TRANSLATORS)
         cv.addWidget(self.translator_seg)
 
@@ -1121,7 +1180,7 @@ class SettingsWindow(QWidget):
 
         vram_header = QHBoxLayout()
         vram_header.setContentsMargins(0, 0, 0, 0)
-        self.lbl_vram_text = QLabel("Видеопамять (VRAM): —")
+        self.lbl_vram_text = QLabel(t("ui.trans.vram", "Видеопамять (VRAM): —"))
         self.lbl_vram_text.setObjectName("Hint")
         self.lbl_vram_text.setStyleSheet("font-size: 11px; color: #9c9388;")
         vram_header.addWidget(self.lbl_vram_text)
@@ -1147,7 +1206,7 @@ class SettingsWindow(QWidget):
         mch.setSpacing(10)
 
         self.model_pill = StatusPill()
-        self.model_pill.set_state("off", "Локальная модель не загружена")
+        self.model_pill.set_state("off", t("ui.trans.model_not_loaded", "Локальная модель не загружена"))
         mch.addWidget(self.model_pill, 1)
 
         self.btn_download_model = QPushButton("⬇ Скачать модель")
@@ -1218,12 +1277,12 @@ class SettingsWindow(QWidget):
         self.gguf_combo.wheelEvent = lambda event: event.ignore()
         self.gguf_combo.currentIndexChanged.connect(self._on_gguf_combo_changed)
 
-        self.btn_open_models_dir = QPushButton("📂 Папка models")
+        self.btn_open_models_dir = QPushButton(t("ui.trans.models_folder", "📂 Папка models"))
         self.btn_open_models_dir.setObjectName("Ghost")
         self.btn_open_models_dir.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_open_models_dir.clicked.connect(self._open_models_folder)
 
-        gh.addWidget(QLabel("Файл модели:"))
+        gh.addWidget(QLabel(t("ui.trans.model_file", "Файл модели:")))
         gh.addWidget(self.gguf_combo, 1)
         gh.addWidget(self.btn_open_models_dir)
         cv.addWidget(self.gguf_select_row)
@@ -1235,7 +1294,7 @@ class SettingsWindow(QWidget):
         cat_v.setContentsMargins(12, 10, 12, 12)
         cat_v.setSpacing(8)
 
-        lbl_cat_title = QLabel("Каталог проверенных моделей GGUF")
+        lbl_cat_title = QLabel(t("ui.trans.catalog_title", "Каталог проверенных моделей GGUF"))
         lbl_cat_title.setStyleSheet("font-weight: 600; color: #e08e45; font-size: 12px;")
         cat_v.addWidget(lbl_cat_title)
 
@@ -1257,13 +1316,14 @@ class SettingsWindow(QWidget):
 
         self.lbl_cache_total = QLabel("Локальные модели на диске: 0 МБ")
         self.lbl_cache_total.setObjectName("Hint")
-        self.lbl_cache_total.setToolTip(
+        self.lbl_cache_total.setToolTip(t(
+            "ui.trans.cache_tooltip",
             "В Windows кэш может дублировать файлы и накапливать старые ревизии весов.\n"
             "Кнопка «Очистить весь кэш» позволяет легко сбросить все накопленные дубликаты."
-        )
+        ))
         ch.addWidget(self.lbl_cache_total, 1)
 
-        self.btn_clear_all = QPushButton("Очистить весь кэш")
+        self.btn_clear_all = QPushButton(t("ui.trans.clear_cache", "Очистить весь кэш"))
         self.btn_clear_all.setObjectName("Ghost")
         self.btn_clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_all.clicked.connect(self._on_clear_all_cache_clicked)
@@ -1277,7 +1337,7 @@ class SettingsWindow(QWidget):
         # ========================================================
         # Карточка 2: Распознавание текста (OCR)
         # ========================================================
-        card_ocr, c_ocr = self._card("Распознавание текста (OCR)")
+        card_ocr, c_ocr = self._card(t("ui.trans.ocr_title", "Распознавание текста (OCR)"))
         self.ocr_seg = SegmentedControl(OCR_ENGINES)
         c_ocr.addWidget(self.ocr_seg)
 
@@ -1289,7 +1349,7 @@ class SettingsWindow(QWidget):
         self.dir_seg = SegmentedControl(OCR_DIRECTIONS, vertical=True)
         self.dir_seg.setMinimumWidth(210)
         self.dir_row = self._option_row(
-            "Направление текста",
+            t("ui.trans.ocr_direction", "Направление текста"),
             self.dir_seg,
             "Режим Tategaki (сверху-вниз, справа-налево) для японских новелл и манги."
         )
@@ -1305,12 +1365,12 @@ class SettingsWindow(QWidget):
         # ========================================================
         # Карточка 3: Производительность
         # ========================================================
-        card2, c2 = self._card("Производительность")
+        card2, c2 = self._card(t("ui.trans.perf_title", "Производительность"))
         self.gpu_toggle = ToggleSwitch()
         c2.addWidget(self._option_row(
-            "Ускорение на GPU (NVIDIA CUDA)",
+            t("ui.trans.gpu", "Ускорение на GPU (NVIDIA CUDA)"),
             self.gpu_toggle,
-            "Переключение перезапускает OCR-движок. Требуется CUDA."))
+            t("ui.trans.gpu_hint", "Переключение перезапускает OCR-движок. Требуется CUDA.")))
         
         self.gpu_pill = StatusPill()
         c2.addWidget(self.gpu_pill)
@@ -1337,7 +1397,8 @@ class SettingsWindow(QWidget):
 
         engine = self.settings.get("translator", "google")
         total_size = get_total_cache_size()
-        self.lbl_cache_total.setText(f"Локальные модели на диске: {format_size(total_size)}")
+        disk_lbl = t("ui.trans.disk_cache", "Локальные модели на диске:")
+        self.lbl_cache_total.setText(f"{disk_lbl} {format_size(total_size)}")
         self.btn_clear_all.setEnabled(total_size > 0)
 
         # Режим Qwen / GGUF
@@ -1347,15 +1408,20 @@ class SettingsWindow(QWidget):
             self.gguf_select_row.show()
             self.catalog_frame.show()
 
-            # Обновляем статус рантайма
+            # Обновляем статус рантайма через i18n
+            active_lbl = t("ui.trans.runtime_active", "Движок llama.cpp:")
+            missing_lbl = t("ui.trans.runtime_missing", "Движок llama.cpp: не установлен")
+            change_lbl = t("ui.trans.runtime_change", "Сменить движок")
+            install_lbl = t("ui.trans.runtime_install", "Установить движок")
+
             installed_backend = get_installed_backend()
             if installed_backend and installed_backend in BACKENDS_CONFIG:
                 b_name = BACKENDS_CONFIG[installed_backend]["title"].split("(")[0].strip()
-                self.runtime_pill.set_state("ok", f"Движок llama.cpp: {b_name}")
-                self.btn_install_runtime.setText("Сменить движок")
+                self.runtime_pill.set_state("ok", f"{active_lbl} {b_name}")
+                self.btn_install_runtime.setText(change_lbl)
             else:
-                self.runtime_pill.set_state("off", "Движок llama.cpp: не установлен")
-                self.btn_install_runtime.setText("Установить движок")
+                self.runtime_pill.set_state("off", missing_lbl)
+                self.btn_install_runtime.setText(install_lbl)
 
             installed = get_installed_models()
             installed_names = [m["filename"] for m in installed]
@@ -1390,7 +1456,6 @@ class SettingsWindow(QWidget):
                 fn = item["filename"]
                 row = self.catalog_rows.get(fn)
                 if row:
-                    # Проверяем наличие файла без учета регистра
                     is_inst = any(fn.lower() == name.lower() for name in installed_names)
                     row._btn_dl.setVisible(not is_inst)
                     row._btn_del.setVisible(is_inst)
@@ -1415,13 +1480,19 @@ class SettingsWindow(QWidget):
         spec = _MODEL_SPECS.get(engine, {})
         approx = spec.get("approx_size", "")
 
+        dl_btn_txt = t("btn.download", "⬇ Скачать")
+        del_btn_txt = t("btn.delete", "Удалить")
+        ready_txt = t("ui.trans.model_ready", "Скачана и готова")
+        missing_txt = t("ui.trans.model_missing", "Не скачана")
+
         if is_cached:
-            self.model_pill.set_state("ok", f"Скачана и готова ({format_size(size)})")
+            self.model_pill.set_state("ok", f"{ready_txt} ({format_size(size)})")
             self.btn_download_model.hide()
+            self.btn_delete_model.setText(del_btn_txt)
             self.btn_delete_model.show()
         else:
-            self.model_pill.set_state("off", f"Не скачана ({approx})")
-            self.btn_download_model.setText(f"⬇ Скачать ({approx})")
+            self.model_pill.set_state("off", f"{missing_txt} ({approx})")
+            self.btn_download_model.setText(f"{dl_btn_txt} ({approx})")
             self.btn_download_model.show()
             self.btn_delete_model.hide()
 
@@ -1467,7 +1538,7 @@ class SettingsWindow(QWidget):
         self._update_cache_display()
 
     def _on_translator_changed(self, ident):
-        self.translator_hint.setText(TRANSLATOR_HINTS.get(ident, ""))
+        self.translator_hint.setText(get_translator_hint(ident).get(ident, ""))
         self.settings.set("translator", ident)
         self._update_lang_lock_state()
         self._saved_timer.start()
@@ -1475,7 +1546,7 @@ class SettingsWindow(QWidget):
         # и в QThread загрузит/выгрузит локальную модель (с прогрессом в gpu_bar).
 
     def _on_ocr_changed(self, ident):
-        self.ocr_hint.setText(OCR_HINTS.get(ident, ""))
+        self.ocr_hint.setText(get_ocr_hint(ident).get(ident, ""))
         self.settings.set("ocr_engine", ident)
         # Показываем Tategaki только для RapidOCR:
         self.dir_row.setVisible(ident == "rapidocr")
@@ -1492,12 +1563,9 @@ class SettingsWindow(QWidget):
 
     def _on_gpu_toggled(self, checked):
         self.settings.set("gpu", bool(checked))
-        self.gpu_pill.set_state(
-            "ok" if checked else "off",
-            "GPU: ускорение активно" if checked else "CPU: стандартный режим"
-        )
+        gpu_txt = t("ui.trans.gpu_active", "GPU: ускорение активно") if checked else t("ui.trans.gpu_cpu_mode", "CPU: стандартный режим")
+        self.gpu_pill.set_state("ok" if checked else "off", gpu_txt)
         self._saved_timer.start()
-        # Если активен EasyOCR — отправляем запрос воркеру:
         if self.settings.get("ocr_engine") == "easyocr":
             self.ocr.request_gpu(bool(checked))
 
@@ -1509,17 +1577,18 @@ class SettingsWindow(QWidget):
         self.gpu_toggle.setChecked(bool(is_gpu))
         self.gpu_toggle.blockSignals(False)
         if success and is_gpu:
-            self.gpu_pill.set_state("ok", "GPU: ускорение активно")
+            self.gpu_pill.set_state("ok", t("ui.trans.gpu_active", "GPU: ускорение активно"))
         elif success:
-            self.gpu_pill.set_state("off", "CPU: стандартный режим")
+            self.gpu_pill.set_state("off", t("ui.trans.gpu_cpu_mode", "CPU: стандартный режим"))
         else:
-            self.gpu_pill.set_state("error", f"Ошибка: {message}")
+            err_pfx = t("ui.trans.error_prefix", "Ошибка:")
+            self.gpu_pill.set_state("error", f"{err_pfx} {message}")
             
         # ---------------- статус локальной модели (швы для контроллера) ----------------
     def model_load_started(self):
-        self.model_pill.set_state("busy", "Загрузка локальной модели…")
+        self.model_pill.set_state("busy", t("ui.trans.model_loading", "Загрузка локальной модели…"))
         self.model_hint.show()
-        self.model_hint.setText("Подготовка…")
+        self.model_hint.setText(t("ui.trans.preparing", "Подготовка…"))
         self.model_bar.show()
         self.model_bar.start_indeterminate()
 
@@ -1579,10 +1648,10 @@ class SettingsWindow(QWidget):
         menu.exec(QPoint(x, y))
 
     def runtime_load_started(self):
-        self.runtime_pill.set_state("busy", "Установка движка…")
+        self.runtime_pill.set_state("busy", t("ui.trans.runtime_installing", "Установка движка…"))
         self.btn_install_runtime.setEnabled(False)
         self.runtime_hint.show()
-        self.runtime_hint.setText("Подготовка…")
+        self.runtime_hint.setText(t("ui.trans.preparing", "Подготовка…"))
         self.runtime_bar.show()
         self.runtime_bar.start_indeterminate()
 
@@ -1604,16 +1673,19 @@ class SettingsWindow(QWidget):
 
     def runtime_failed(self, backend_id: str, error: str):
         self.runtime_bar.hide()
-        self.runtime_hint.setText(f"Ошибка: {error}")
+        err_pfx = t("ui.trans.error_prefix", "Ошибка:")
+        self.runtime_hint.setText(f"{err_pfx} {error}")
         self.runtime_hint.show()
         self.btn_install_runtime.setEnabled(True)
-        self.runtime_pill.set_state("error", "Сбой установки")
+        self.runtime_pill.set_state("error", t("ui.trans.runtime_failed", "Сбой установки"))
 
     def model_loaded(self, engine_id):
-        self.model_finished("ok", f"Модель готова: {ENGINE_LABELS.get(engine_id, engine_id)}")
+        pfx = t("ui.trans.model_ready_prefix", "Модель готова:")
+        self.model_finished("ok", f"{pfx} {ENGINE_LABELS.get(engine_id, engine_id)}")
 
     def model_failed(self, engine_id, error):
-        self.model_finished("error", f"Ошибка загрузки модели: {error}")
+        pfx = t("ui.trans.model_failed_prefix", "Ошибка загрузки модели:")
+        self.model_finished("error", f"{pfx} {error}")
 
     def set_gpu_available(self, available: bool):
         """Вызывается, когда OCR-воркер проверил наличие CUDA."""
@@ -1626,15 +1698,15 @@ class SettingsWindow(QWidget):
         self.gpu_toggle.setChecked(False)
         self.gpu_toggle.setEnabled(False)
         self.gpu_toggle.blockSignals(False)
-        self.gpu_toggle.setToolTip("CUDA не обнаружена — доступен только CPU")
+        self.gpu_toggle.setToolTip(t("ui.trans.gpu_cuda_missing", "CUDA не обнаружена — доступен только CPU"))
 
     # ---------------- страница: Горячие клавиши ----------------
     def _page_hotkeys(self):
         page, v = self._page()
-        card, cv = self._card("Горячие клавиши")
+        card, cv = self._card(t("ui.hotkeys.title", "Горячие клавиши"))
 
-        hint = QLabel("Кликните по кнопке и нажмите новое сочетание. Esc — отмена. "
-                      "Нужен Ctrl или Alt (либо F-клавиша).")
+        hint = QLabel(t("ui.hotkeys.hint", "Кликните по кнопке и нажмите новое сочетание. Esc — отмена. "
+                      "Нужен Ctrl или Alt (либо F-клавиша)."))
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         cv.addWidget(hint)
@@ -1652,7 +1724,7 @@ class SettingsWindow(QWidget):
         rh = QHBoxLayout(reset_row)
         rh.setContentsMargins(0, 0, 0, 0)
         rh.addStretch(1)
-        btn_reset = QPushButton("Вернуть стандартные")
+        btn_reset = QPushButton(t("ui.hotkeys.reset", "Вернуть стандартные"))
         btn_reset.setObjectName("Ghost")
         btn_reset.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_reset.clicked.connect(self._reset_hotkeys)
@@ -1700,14 +1772,14 @@ class SettingsWindow(QWidget):
         # ========================================================
         # Карточка 1: Процессор и нейросети
         # ========================================================
-        card_cpu, c_cpu = self._card("Процессор и нейросети")
+        card_cpu, c_cpu = self._card(t("ui.adv.cpu_title", "Процессор и нейросети"))
 
         import os
         total_cores = os.cpu_count() or 4
         self._auto_threads = max(1, (os.cpu_count() // 2) - 1)
 
         # 1. Заголовок
-        lbl_threads = QLabel("Потоки процессора (CPU Threads)")
+        lbl_threads = QLabel(t("ui.adv.threads", "Потоки процессора (CPU Threads)"))
         c_cpu.addWidget(lbl_threads)
 
         # 2. Полноразмерный слайдер + значение
@@ -1730,8 +1802,9 @@ class SettingsWindow(QWidget):
 
         # 3. Развернутое описание под слайдером на всю ширину
         thl = QLabel(
-            "Выделенные ядра для нейросети. 'Авто' оставляет половину ядер процессора для системы и игр (левое положение).\n"
-            "⚠️ Внимание: изменение значения перезапускает локальный сервер нейросети (занимает 1–3 сек)."
+            t("ui.adv.threads_hint", 
+              "Выделенные ядра для нейросети. 'Авто' оставляет половину ядер процессора для системы и игр (левое положение).\n"
+              "⚠️ Внимание: изменение значения перезапускает локальный сервер нейросети (занимает 1–3 сек).")
         )
         thl.setObjectName("Hint")
         thl.setWordWrap(True)
@@ -1741,10 +1814,10 @@ class SettingsWindow(QWidget):
         # ========================================================
         # Карточка 2: Авто-режим захвата
         # ========================================================
-        card_auto, c_auto = self._card("Авто-режим захвата")
+        card_auto, c_auto = self._card(t("ui.adv.auto_title", "Авто-режим захвата"))
 
         # 1. Заголовок
-        lbl_delay = QLabel("Задержка распознавания (Дебаунс)")
+        lbl_delay = QLabel(t("ui.adv.delay", "Задержка распознавания (Дебаунс)"))
         c_auto.addWidget(lbl_delay)
 
         # 2. Полноразмерный слайдер + значение
@@ -1766,7 +1839,7 @@ class SettingsWindow(QWidget):
         c_auto.addLayout(d_row)
 
         # 3. Описание снизу
-        dhl = QLabel("Пауза для стабилизации текста перед отправкой для перевода (200–2000 мс).")
+        dhl = QLabel(t("ui.adv.delay_hint", "Пауза для стабилизации текста перед отправкой для перевода (200–2000 мс)."))
         dhl.setObjectName("Hint")
         dhl.setWordWrap(True)
         c_auto.addWidget(dhl)
@@ -1775,13 +1848,13 @@ class SettingsWindow(QWidget):
         # ========================================================
         # Карточка 3: Диагностика и логирование
         # ========================================================
-        card_diag, c_diag = self._card("Диагностика")
+        card_diag, c_diag = self._card(t("ui.adv.diag_title", "Диагностика"))
         self.verbose_toggle = ToggleSwitch()
         c_diag.addWidget(self._option_row(
-            "Подробный лог (для отладки)",
+            t("ui.adv.verbose", "Подробный лог (для отладки)"),
             self.verbose_toggle,
-            "В app.log пишется полный текст OCR и переводов без обрезки."
-            "Включайте только при поиске ошибок."))
+            t("ui.adv.verbose_hint", "В app.log пишется полный текст OCR и переводов без обрезки."
+            "Включайте только при поиске ошибок.")))
         v.addWidget(card_diag)
 
         # Подключаем сигналы
@@ -1829,7 +1902,7 @@ class SettingsWindow(QWidget):
     # ---------------- страница: О программе ----------------
     def _page_about(self):
         page, v = self._page()
-        card, cv = self._card("О программе")
+        card, cv = self._card(t("ui.about.title", "О программе"))
 
         cv.addWidget(QLabel(f"ScreenTale {APP_VERSION}"))
         cv.addWidget(QLabel(f"Python {os.sys.version.split()[0]} · PySide6 · Qt {qVersion()}"))
@@ -1838,10 +1911,10 @@ class SettingsWindow(QWidget):
         btns.setObjectName("Row")
         bh = QHBoxLayout(btns)
         bh.setContentsMargins(0, 0, 0, 0)
-        b_folder = QPushButton("Открыть папку приложения")
+        b_folder = QPushButton(t("ui.about.open_folder", "Открыть папку приложения"))
         b_folder.setObjectName("Ghost")
         b_folder.clicked.connect(lambda: os.startfile(get_app_dir()))
-        b_sysinfo = QPushButton("Скопировать данные о системе")
+        b_sysinfo = QPushButton(t("ui.about.copy_sysinfo", "Скопировать данные о системе"))
         b_sysinfo.setObjectName("Ghost")
         b_sysinfo.clicked.connect(self._copy_sysinfo)
         bh.addWidget(b_folder)
@@ -1850,10 +1923,10 @@ class SettingsWindow(QWidget):
         cv.addWidget(btns)
 
         # 🥚 Пасхалка: карточка благодарности тестировщику
-        card_thanks, cv_thanks = self._card("Особая благодарность")
+        card_thanks, cv_thanks = self._card(t("ui.about.thanks_title", "Особая благодарность"))
         thanks = QLabel(
-            "Главному тестировщику — за выдержку, мужество и страдания в версии 0.4."
-        )
+            t("ui.about.thanks_text", "Главному тестировщику — за выдержку, мужество и страдания в версии 0.4."
+        ))
         thanks.setObjectName("Hint")
         thanks.setWordWrap(True)
         cv_thanks.addWidget(thanks)
@@ -1903,9 +1976,10 @@ class SettingsWindow(QWidget):
         self.gpu_toggle.blockSignals(True)
         self.gpu_toggle.setChecked(is_gpu)
         self.gpu_toggle.blockSignals(False)
+        gpu_txt = t("ui.trans.gpu_active", "GPU: ускорение активно") if is_gpu else t("ui.trans.gpu_cpu_mode", "CPU: стандартный режим")
         self.gpu_pill.set_state(
             "ok" if is_gpu else "off",
-            "GPU: ускорение активно" if is_gpu else "CPU: стандартный режим",
+            gpu_txt,
         )
         self._update_cache_display()
         self._on_setting_changed("ocr_engine", self.settings.get("ocr_engine", "windows"))
@@ -1920,6 +1994,7 @@ class SettingsWindow(QWidget):
         self._update_ocr_lang_warning()
         self._on_setting_changed("text_outline", self.settings.get("text_outline", False))
         self.mode_seg.set_value(self.settings.get("overlay_mode", "chat"))
+        self._update_ui_lang_button_text()
 
     def _on_setting_changed(self, key, value):
         if key == "font_size":
@@ -1940,7 +2015,7 @@ class SettingsWindow(QWidget):
             self.autocopy_toggle.blockSignals(False)
         elif key == "translator":
             self.translator_seg.set_value(value)
-            self.translator_hint.setText(TRANSLATOR_HINTS.get(value, ""))
+            self.translator_hint.setText(get_translator_hint(value))
             self._update_cache_display()
         elif key == "hotkeys" or key.startswith("hotkeys."):
             hks = self.settings.get("hotkeys")
@@ -1960,7 +2035,7 @@ class SettingsWindow(QWidget):
         elif key == "ocr_engine":
             self._update_ocr_lang_warning()
             self.ocr_seg.set_value(value)
-            self.ocr_hint.setText(OCR_HINTS.get(value, ""))
+            self.ocr_hint.setText(get_ocr_hint(value))
             self.dir_row.setVisible(value == "rapidocr")
         elif key == "ocr_direction":
             self.dir_seg.set_value(value)
@@ -2018,48 +2093,122 @@ class SettingsWindow(QWidget):
             event.accept()
 
     def _show_game_picker_menu(self):
-        """Открывает меню запущенных окон для привязки."""
+        """Открывает меню запущенных окон для привязки (как в Discord)."""
         menu = QMenu(self)
         windows = get_running_games()
 
-        # 1. Пункт сброса привязки
-        act_reset = menu.addAction("Работать по всему экрану (Сброс)")
+        # 1. Сброс привязки
+        act_reset = menu.addAction(t("sidebar.pin_reset", "Работать по всему экрану (Сброс)"))
         act_reset.triggered.connect(lambda: self._select_game_target(None))
         menu.addSeparator()
 
-        menu.addSection("Запущенные игры и окна:")
+        menu.addSection(t("sidebar.running_games", "Запущенные игры и окна:"))
 
         if not windows:
-            act_empty = menu.addAction("(Нет доступных окон)")
+            act_empty = menu.addAction(t("sidebar.no_windows", "  (Нет доступных окон)"))
             act_empty.setEnabled(False)
         else:
             for w in windows:
-                # Обрезаем слишком длинные заголовки
                 short_title = w.title if len(w.title) <= 28 else w.title[:25] + "..."
                 label = f"🎮 {short_title} ({w.exe_name})"
                 act = menu.addAction(label)
                 act.triggered.connect(lambda _=False, win=w: self._select_game_target(win))
 
-        # Выравниваем меню над кнопкой
         pos = self.btn_game_profile.mapToGlobal(QPoint(0, 0))
         menu.exec(pos + QPoint(0, -menu.sizeHint().height() - 4))
+
+    def _show_ui_lang_menu(self):
+        """Открывает меню доступных языков интерфейса (сканирует папку locales/)."""
+        menu = QMenu(self)
+        available_langs = get_available_ui_languages()
+        cur_lang = self.settings.get("ui_lang", "auto")
+
+        # 1. Автоматический системный язык
+        is_auto = (cur_lang == "auto")
+        act_auto = menu.addAction(f"{'✓ ' if is_auto else '   '}Авто (Системный) / Auto")
+        act_auto.triggered.connect(lambda: self._select_ui_lang("auto"))
+        menu.addSeparator()
+
+        menu.addSection("Доступные локализации:")
+
+        # 2. Список найденных языков из locales/
+        for code, name in available_langs:
+            is_active = (cur_lang == code)
+            prefix = "✓ " if is_active else "   "
+            act = menu.addAction(f"{prefix}{name}")
+            if is_active:
+                act.setEnabled(False)
+            else:
+                act.triggered.connect(lambda _=False, c=code: self._select_ui_lang(c))
+
+        # Выравниваем меню над кнопкой
+        pos = self.btn_ui_lang.mapToGlobal(QPoint(0, 0))
+        menu.exec(pos + QPoint(0, -menu.sizeHint().height() - 4))
+
+    def _select_ui_lang(self, code: str):
+        self.settings.set("ui_lang", code)
+        self._saved_timer.start()
+
+        effective_code = detect_system_ui_lang() if code == "auto" else code
+        load_locale(effective_code)
+
+        # 1. Обновляем текст на кнопке языка
+        self._update_ui_lang_button_text()
+
+        # 2. Обновляем названия языков в выпадающих списках прямо сейчас!
+        if hasattr(self, "combo_src_lang") and hasattr(self, "combo_dst_lang"):
+            self._populate_lang_combos()
+
+        # 3. Если игра не привязана — обновляем надпись кнопки привязки
+        if not self.settings.get("pinned_exe"):
+            self.btn_game_profile.setText(t("sidebar.pin_game", "Привязать к игре ▾"))
+
+        self.toast.show_toast(
+            "Language changed! Restart the app for full translation." if effective_code == "en" else "Язык интерфейса изменён! Для полного применения перезапустите программу.",
+            ms=3500
+        )
+
+    def _update_ui_lang_button_text(self):
+        """Обновляет подпись кнопки в сайдбаре."""
+        cur = self.settings.get("ui_lang", "auto")
+        if cur == "auto":
+            self.btn_ui_lang.setText("Авто (Язык) ▾")
+        else:
+            langs = dict(get_available_ui_languages())
+            label = langs.get(cur, cur.upper())
+            self.btn_ui_lang.setText(f"{label} ▾")
 
     def _select_game_target(self, win: WindowInfo | None):
         """Сохраняет выбранную игру и уведомляет контроллер."""
         if win:
             self.btn_game_profile.setText(f"🟢 {win.exe_name[:12]} ▾")
-            self.btn_game_profile.setToolTip(f"Привязано к окну:\n{win.title} ({win.exe_name})")
+            self.btn_game_profile.setToolTip(f"{t('toast.pinned_to', 'Привязано к окну:')}\n{win.title} ({win.exe_name})")
+            self.btn_game_profile.setStyleSheet("""
+                QPushButton {
+                    border: 1px solid #4ade80;
+                    color: #4ade80;
+                    background: rgba(74, 222, 128, 0.08);
+                    font-weight: 600;
+                    border-radius: 8px;
+                    padding: 6px 12px;
+                }
+                QPushButton:hover {
+                    background: rgba(74, 222, 128, 0.16);
+                }
+            """)
             self.settings.set("pinned_exe", win.exe_name, save=False)
             self.settings.set("pinned_hwnd", win.hwnd, save=False)
             self.settings.changed.emit("window_pinned", win)
-            self.toast.show_toast(f"Привязано к: {win.exe_name}")
+            self.toast.show_toast(t("toast.pinned_to", "Привязано к окну: {exe}").replace("{exe}", win.exe_name))
         else:
-            self.btn_game_profile.setText("Привязать к игре ▾")
-            self.btn_game_profile.setToolTip("Привязать оверлей к окну игры (авто-скрытие при Alt+Tab)")
+            self.btn_game_profile.setText(t("sidebar.pin_game", "Привязать к игре ▾"))
+            self.btn_game_profile.setToolTip(t("sidebar.pin_game_tip", "Привязать оверлей к окну игры (авто-скрытие при Alt+Tab)"))
+            self.btn_game_profile.setStyleSheet("")
+            
             self.settings.set("pinned_exe", "", save=False)
             self.settings.set("pinned_hwnd", 0, save=False)
             self.settings.changed.emit("window_pinned", None)
-            self.toast.show_toast("Привязка сброшена (режим всего экрана)")
+            self.toast.show_toast(t("toast.pin_reset", "Привязка сброшена (режим всего экрана)"))
 
     def _handle_exit(self):
         self.settings.save()

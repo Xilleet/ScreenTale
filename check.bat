@@ -6,7 +6,7 @@ echo ========================================
 echo.
 
 :: Запускаем ruff, пишем результат в ruff_report.txt (включая ошибки)
-python -m ruff check main.py test_suite.py backend frontend > ruff_report.txt 2>&1
+python -m ruff check main.py test_suite.py locales backend frontend > ruff_report.txt 2>&1
 set ERR=%ERRORLEVEL%
 
 :: Выводим содержимое файла прямо в окно консоли

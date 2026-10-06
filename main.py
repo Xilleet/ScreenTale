@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 from backend.auto_mode import AutoModeWorker
 from backend.config import SettingsManager
 from backend.hotkeys import HotkeyManager
+from backend.i18n import detect_system_ui_lang, load_locale
 from backend.ocr import OcrWorker
 from backend.runtime_manager import RuntimeDownloadWorker, kill_llama_server
 from backend.translators import (
@@ -126,6 +127,12 @@ class AppController(QObject):
         self.app = app
 
         self.settings = SettingsManager()
+
+        # Инициализируем язык интерфейса
+        saved_ui_lang = self.settings.get("ui_lang", "auto")
+        effective_lang = detect_system_ui_lang() if saved_ui_lang == "auto" else saved_ui_lang
+        load_locale(effective_lang)
+
         self.hotkeys = HotkeyManager()
         apply_theme(app, self.settings.get("theme", "dark"))
 

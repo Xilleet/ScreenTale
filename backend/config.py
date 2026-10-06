@@ -48,6 +48,7 @@ DEFAULTS = {
     "overlay_mode": "chat",
     "welcome_completed": False,
     "streamer_mode": False,
+    "ui_lang": "auto",  # auto | en | ru (или любой код из locales/)
     "hotkeys": {
         # mods — флаги RegisterHotKey, vk — виртуальный код Windows
         "single":        {"label": "Alt+Q",  "mods": 0x0001, "vk": 0x51},
@@ -151,7 +152,8 @@ class SettingsManager(QObject):
         for key in ("theme", "font_size", "opacity", "gpu", "auto_copy",
                     "auto_delay_ms", "verbose_log", "ocr_engine", "ocr_direction",
                     "welcome_completed", "selected_gguf", "src_lang", "dst_lang", 
-                    "recent_pairs", "cpu_threads", "text_outline", "streamer_mode", "overlay_mode"):
+                    "recent_pairs", "cpu_threads", "text_outline", "streamer_mode", 
+                    "ui_lang", "overlay_mode"):
             if key in data:
                 self._values[key] = data[key]
 
