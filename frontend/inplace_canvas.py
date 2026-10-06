@@ -1,5 +1,6 @@
 """Полноэкранный прозрачный сквозной холст (AR-Canvas) для замещения текста."""
 import ctypes
+import math
 import sys
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ class InPlaceBlock:
     text: str
     bg_color: QColor
     font_size: int
+    angle: float = 0.0
 
 
 def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 1.8) -> list[dict]:
@@ -151,7 +153,7 @@ class InPlaceCanvas(QWidget):
             self.clear()
 
     def display_translation(self, raw_blocks: list[dict], translated_text: str):
-        """Отрисовывает перевод: каждый независимый баббл в своём углу экрана!"""
+        """Принимает сырые строки OCR и отображает плашки перевода с расчётом угла наклона."""
         if not raw_blocks or not translated_text.strip():
             return
 
@@ -159,30 +161,77 @@ class InPlaceCanvas(QWidget):
         if not clusters:
             return
 
+        # 1. Вычисляем угол наклона по полигону первой строки (atan2)
+        angle = 0.0
+        if raw_blocks and "polygon" in raw_blocks[0]:
+            poly = raw_blocks[0]["polygon"]
+            if len(poly) >= 2:
+                dx = poly[1][0] - poly[0][0]
+                dy = poly[1][1] - poly[0][1]
+                calc_angle = math.degrees(math.atan2(dy, dx))
+                if abs(calc_angle) >= 1.5:
+                    angle = calc_angle
+
         new_blocks = []
-        # Если блок один — накрываем его целиком переводом
+
+        # 2. Если один смысловой блок (основной случай диалогов/цитат)
         if len(clusters) == 1:
-            padded = clusters[0]["rect"].adjusted(-8, -6, 8, 6)
-            bg = sample_background_color(padded)
-            bg.setAlpha(245)
-            f_sz = find_optimal_font_size(translated_text, padded.width() - 16, padded.height() - 10)
-            metrics = QFontMetrics(QFont("Segoe UI", f_sz, QFont.Weight.Bold))
-            calc = metrics.boundingRect(QRect(0, 0, padded.width() - 16, 0), Qt.TextFlag.TextWordWrap, translated_text)
-            if calc.height() + 16 > padded.height():
-                padded.setHeight(calc.height() + 16)
-            new_blocks.append(InPlaceBlock(rect=padded, text=translated_text, bg_color=bg, font_size=f_sz))
+            target_rect = clusters[0]["rect"]
+            padded_rect = target_rect.adjusted(-8, -6, 8, 6)
+            bg_color = sample_background_color(padded_rect)
+            bg_color.setAlpha(245)
+
+            font_size = find_optimal_font_size(
+                translated_text, padded_rect.width() - 16, padded_rect.height() - 10
+            )
+
+            metrics = QFontMetrics(QFont("Segoe UI", font_size, QFont.Weight.Bold))
+            calc_rect = metrics.boundingRect(
+                QRect(0, 0, padded_rect.width() - 16, 0),
+                Qt.TextFlag.TextWordWrap,
+                translated_text,
+            )
+
+            needed_height = calc_rect.height() + 16
+            if needed_height > padded_rect.height():
+                padded_rect.setHeight(needed_height)
+
+            print(
+                f"[inplace] Отрисовка: оригинал {target_rect} -> плашка {padded_rect}, "
+                f"угол={angle:.1f}°, шрифт={font_size}px, цвет={bg_color.name()}"
+            )
+
+            new_blocks.append(
+                InPlaceBlock(
+                    rect=padded_rect,
+                    text=translated_text,
+                    bg_color=bg_color,
+                    font_size=font_size,
+                    angle=angle,
+                )
+            )
         else:
-            # Если несколько бабблов (например, квест слева и диалог справа)
+            # Если несколько независимых бабблов в разных углах экрана
             lines = [ln.strip() for ln in translated_text.split("\n") if ln.strip()]
             for i, c in enumerate(clusters):
                 txt = lines[i] if i < len(lines) else (translated_text if i == 0 else "")
                 if not txt:
                     continue
-                padded = c["rect"].adjusted(-6, -4, 6, 4)
-                bg = sample_background_color(padded)
-                bg.setAlpha(245)
-                f_sz = find_optimal_font_size(txt, padded.width() - 12, padded.height() - 8)
-                new_blocks.append(InPlaceBlock(rect=padded, text=txt, bg_color=bg, font_size=f_sz))
+                target_rect = c["rect"]
+                padded_rect = target_rect.adjusted(-6, -4, 6, 4)
+                bg_color = sample_background_color(padded_rect)
+                bg_color.setAlpha(245)
+                font_size = find_optimal_font_size(txt, padded_rect.width() - 12, padded_rect.height() - 8)
+
+                new_blocks.append(
+                    InPlaceBlock(
+                        rect=padded_rect,
+                        text=txt,
+                        bg_color=bg_color,
+                        font_size=font_size,
+                        angle=angle,
+                    )
+                )
 
         self.active_blocks = new_blocks
         self.show()
@@ -222,6 +271,7 @@ class InPlaceCanvas(QWidget):
             print(f"[inplace] Ошибка переключения защиты захвата: {e}")
 
     def paintEvent(self, event):
+        """Отрисовка плашек перевода на холсте с поддержкой пространственного наклона."""
         if not self.active_blocks:
             return
 
@@ -232,19 +282,37 @@ class InPlaceCanvas(QWidget):
         for b in self.active_blocks:
             rect = b.rect
 
-            # 1. Плотная матовая плашка в тон фона игры
-            p.setBrush(b.bg_color)
-            p.setPen(QPen(QColor(255, 255, 255, 40), 1))  # Тонкая рамка
-            p.drawRoundedRect(rect, 6, 6)
+            p.save()  # 1. Сохраняем состояние холста
 
-            # 2. Текст перевода (белый с аккуратным центрированием)
+            # 2. Переносим центр координат в центр нашей плашки
+            cx = rect.center().x()
+            cy = rect.center().y()
+            p.translate(cx, cy)
+
+            # 3. Поворачиваем холст на угол наклона текста в игре
+            if abs(b.angle) >= 1.5:
+                p.rotate(b.angle)
+
+            # 4. Локальные координаты прямоугольника относительно центра (0, 0)
+            w = rect.width()
+            h = rect.height()
+            local_rect = QRect(-w // 2, -h // 2, w, h)
+
+            # 5. Рисуем матовую подложку «Хамелеон»
+            p.setBrush(b.bg_color)
+            p.setPen(QPen(QColor(255, 255, 255, 40), 1))
+            p.drawRoundedRect(local_rect, 6, 6)
+
+            # 6. Рисуем текст перевода (он автоматически повернётся вместе с холстом!)
             p.setPen(QColor(245, 240, 235))
             p.setFont(QFont("Segoe UI", b.font_size, QFont.Weight.Bold))
             p.drawText(
-                rect.adjusted(8, 6, -8, -6),
+                local_rect.adjusted(8, 6, -8, -6),
                 Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignCenter,
                 b.text,
             )
+
+            p.restore()  # 7. Возвращаем холст в исходное положение
 
     def nativeEvent(self, eventType, message):
         """Сквозной клик (HTTRANSPARENT)."""

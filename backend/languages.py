@@ -130,7 +130,7 @@ def get_nllb_code(code: str) -> str:
 
 
 def build_llm_system_prompt(src_code: str, dst_code: str) -> str:
-    """Генерирует лаконичный и строгий системный промпт для LLM под выбранную пару."""
+    """Генерирует лаконичный системный промпт для игровой локализации и субтитров."""
     src_info = LANGUAGES.get(src_code, {})
     dst_info = LANGUAGES.get(dst_code, {})
 
@@ -138,10 +138,12 @@ def build_llm_system_prompt(src_code: str, dst_code: str) -> str:
     src_name = src_info.get("name_en", "the original language")
 
     return (
-        f"You are a professional game localization translator. "
-        f"Translate the given text from {src_name} into natural, fluent {dst_name}. "
-        f"Fix minor OCR glitches silently. Keep the character's tone and emotions. "
-        f"Output ONLY the translation, without notes, explanations, or quotes."
+        f"You are a professional game subtitle and UI localization translator. "
+        f"Translate the given text from {src_name} into natural, fluent {dst_name}.\n"
+        f"- Keep the translation CONCISE, compact, and punchy to fit strict game UI limits.\n"
+        f"- Drop unnecessary pronouns and filler words without losing core meaning.\n"
+        f"- Fix minor OCR glitches silently. Keep the character's tone and emotion.\n"
+        f"- Output ONLY the final translation, without notes, explanations, or quotes."
     )
 
 def format_pair_badge(src_code: str, dst_code: str) -> str:
