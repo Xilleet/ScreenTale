@@ -6,8 +6,8 @@ from ctypes import wintypes
 from dataclasses import dataclass
 
 from PIL import ImageGrab
-from PySide6.QtCore import QRect, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
 
@@ -110,6 +110,9 @@ def find_optimal_font_size(text: str, max_w: int, max_h: int, min_sz: int = 9, m
 
 class InPlaceCanvas(QWidget):
     """Невидимый полноэкранный слой поверх рабочего стола и игр."""
+    
+    # Сигнал точечного клика с координатами мыши (X, Y)
+    point_translate_requested = Signal(QPoint)
 
     def __init__(self):
         super().__init__()
@@ -137,20 +140,38 @@ class InPlaceCanvas(QWidget):
         # закрытие по правой кнопке мыши
         self._mouse_timer = QTimer(self)
         self._mouse_timer.setInterval(25)
-        self._mouse_timer.timeout.connect(self._check_mouse_dismiss)
+        self._mouse_timer.timeout.connect(self._check_mouse_actions)
         self._mouse_timer.start()
 
         # Окно видно глазам, но для захвата экрана (OCR / ImageGrab) оно невидимо!
         self.set_capture_visibility(False)
 
-    def _check_mouse_dismiss(self):
-        """ПКМ (правая кнопка мыши) мгновенно убирает перевод с экрана."""
+    def _check_mouse_actions(self):
+        """Слушает клики мыши: 
+        - ПКМ: мгновенно убирает перевод с экрана.
+        - Ctrl + ЛКМ: запрашивает точечный перевод фразы под курсором!
+        """
         if sys.platform != "win32":
             return
-        # 0x02 = VK_RBUTTON
-        is_r_down = bool(ctypes.windll.user32.GetAsyncKeyState(0x02) & 0x8000)
+
+        user32 = ctypes.windll.user32
+        # 0x02 = VK_RBUTTON (ПКМ)
+        is_r_down = bool(user32.GetAsyncKeyState(0x02) & 0x8000)
+        # 0x01 = VK_LBUTTON (ЛКМ), 0x11 = VK_CONTROL (Ctrl)
+        is_l_down = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
+        is_ctrl_down = bool(user32.GetAsyncKeyState(0x11) & 0x8000)
+
+        # 1. ПКМ закрывает активный перевод
         if is_r_down and self.active_blocks:
             self.clear()
+
+        # 2. Ctrl + ЛКМ триггерит точечный перевод под курсором
+        if is_l_down and is_ctrl_down and not getattr(self, "_was_ctrl_l_down", False):
+            pos = QCursor.pos()
+            print(f"[inplace] Сработал Ctrl + ЛКМ в точке ({pos.x()}, {pos.y()})")
+            self.point_translate_requested.emit(pos)
+
+        self._was_ctrl_l_down = is_l_down and is_ctrl_down
 
     def display_translation(self, raw_blocks: list[dict], translated_text: str):
         """Принимает сырые строки OCR и отображает плашки перевода с расчётом угла наклона."""

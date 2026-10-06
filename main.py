@@ -272,6 +272,10 @@ class AppController(QObject):
         self.trans_win.toolbar.pin_clicked.connect(self._pin_to_current_active_window)
         self.settings.changed.connect(self._on_setting_changed)
 
+        # сигнал от холста
+        self.inplace_canvas = InPlaceCanvas()
+        self.inplace_canvas.point_translate_requested.connect(self._on_point_lookup_requested)
+
     def _toggle_pause_auto(self):
         if not self._auto_active:
             self.trans_win.show_translation("[Авто-режим не запущен]")
@@ -422,6 +426,43 @@ class AppController(QObject):
     def _on_read_result(self, bbox, text, blocks, context):
         print(f"[ctrl] read_result ctx={context}, блоков с координатами: {len(blocks)}: {text[:50]!r}")
         vlog(f"[ctrl] read_result (full) ctx={context}: {text!r}")
+
+        # --- ТОЧЕЧНЫЙ ПЕРЕВОД ПО КЛИКУ (Ctrl + ЛКМ) ---
+        if context == "point_lookup":
+            if not blocks or text.startswith("["):
+                return
+
+            from frontend.inplace_canvas import cluster_lines
+            clusters = cluster_lines(blocks)
+            if not clusters:
+                return
+
+            # Ищем баббл, в который попал курсор (Hit-Test с допуском 12px)
+            click_pt = getattr(self, "_last_lookup_pos", None)
+            target_cluster = None
+
+            if click_pt:
+                for c in clusters:
+                    if c["rect"].adjusted(-12, -12, 12, 12).contains(click_pt):
+                        target_cluster = c
+                        break
+
+            # Если точного попадания нет — берём ближайший к курсору баббл
+            if not target_cluster and clusters and click_pt:
+                target_cluster = min(
+                    clusters, 
+                    key=lambda c: (c["rect"].center() - click_pt).manhattanLength()
+                )
+
+            if target_cluster:
+                target_text = target_cluster["text"].strip()
+                if target_text:
+                    print(f"[ctrl] Выделен целевой баббл под мышкой: {target_text!r}")
+                    # Сохраняем ТОЛЬКО строки этого конкретного баббла
+                    self._last_blocks = [b for b in blocks if target_cluster["rect"].contains(b["rect"].center())] or blocks
+                    self._last_source = target_text
+                    self._request_translation(target_text)
+            return
 
         # 1. ЗАЩИТА ОТ САМОПЕРЕВОДА (проверяем только реальный текст, не системные сообщения в скобках [ )
         src_lang = self.settings.get("src_lang", "en")
@@ -1149,6 +1190,25 @@ class AppController(QObject):
             # Игрок вернулся в игру -> если есть активный перевод, показываем!
             if self.inplace_canvas.active_blocks and not self.inplace_canvas.isVisible():
                 self.inplace_canvas.show()
+
+    def _on_point_lookup_requested(self, cursor_pos: QPoint):
+        """Вырезает компактную область вокруг курсора и запускает точечный OCR."""
+        cx, cy = cursor_pos.x(), cursor_pos.y()
+        self._last_lookup_pos = cursor_pos  # Запоминаем точку клика
+
+        # Берём область 500x260 px вокруг мыши (с запасом под длинные диалоги)
+        hw, hh = 250, 130
+        screen = QApplication.screenAt(cursor_pos) or QApplication.primaryScreen()
+        v_geo = screen.virtualGeometry() if screen else QRect(0, 0, 1920, 1080)
+
+        left = max(v_geo.left(), cx - hw)
+        top = max(v_geo.top(), cy - hh)
+        right = min(v_geo.right(), cx + hw)
+        bottom = min(v_geo.bottom(), cy + hh)
+
+        bbox = (left, top, right, bottom)
+        print(f"[ctrl] Точечный скан вокруг курсора: {bbox}")
+        self.ocr.read(bbox, context="point_lookup")
 
 def main():
     # Флаг быстрой консольной диагностики: python main.py --doctor
