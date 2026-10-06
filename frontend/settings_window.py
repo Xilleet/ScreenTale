@@ -6,6 +6,7 @@ from ctypes import wintypes
 from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
+    QFileInfo,
     QParallelAnimationGroup,
     QPoint,
     QPropertyAnimation,
@@ -15,10 +16,11 @@ from PySide6.QtCore import (
     Signal,
     qVersion,
 )
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QFileIconProvider,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -58,6 +60,7 @@ from frontend.theme import PALETTE, apply_theme
 from frontend.translate_window import _load_ui_icon
 from frontend.widgets import (
     BusyBar,
+    GlowingPinButton,
     HotkeyRecorder,
     SegmentedControl,
     StatusPill,
@@ -460,7 +463,7 @@ class SettingsWindow(QWidget):
         # ========================================================
         # Выбор игры для привязки (Discord-Style)
         # ========================================================
-        self.btn_game_profile = QPushButton(t("sidebar.pin_game", "Привязать к игре ▾"))
+        self.btn_game_profile = GlowingPinButton(t("sidebar.pin_game", "Привязать к игре ▾"))
         self.btn_game_profile.setObjectName("Ghost")
         self.btn_game_profile.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_game_profile.setToolTip(t("sidebar.pin_game_tip", "Привязать оверлей к окну игры (авто-скрытие при Alt+Tab)"))
@@ -2096,6 +2099,7 @@ class SettingsWindow(QWidget):
         """Открывает меню запущенных окон для привязки (как в Discord)."""
         menu = QMenu(self)
         windows = get_running_games()
+        icon_provider = QFileIconProvider()
 
         # 1. Сброс привязки
         act_reset = menu.addAction(t("sidebar.pin_reset", "Работать по всему экрану (Сброс)"))
@@ -2110,8 +2114,15 @@ class SettingsWindow(QWidget):
         else:
             for w in windows:
                 short_title = w.title if len(w.title) <= 28 else w.title[:25] + "..."
-                label = f"🎮 {short_title} ({w.exe_name})"
-                act = menu.addAction(label)
+                label = f"{short_title} ({w.exe_name})"
+
+                # Извлекаем иконку напрямую из .exe файла!
+                try:
+                    icon = icon_provider.icon(QFileInfo(w.exe_path))
+                except Exception:
+                    icon = QIcon()  # Если иконки нет, будет просто пустое место
+
+                act = menu.addAction(icon, label)
                 act.triggered.connect(lambda _=False, win=w: self._select_game_target(win))
 
         pos = self.btn_game_profile.mapToGlobal(QPoint(0, 0))
@@ -2183,6 +2194,7 @@ class SettingsWindow(QWidget):
         if win:
             self.btn_game_profile.setText(f"🟢 {win.exe_name[:12]} ▾")
             self.btn_game_profile.setToolTip(f"{t('toast.pinned_to', 'Привязано к окну:')}\n{win.title} ({win.exe_name})")
+            self.btn_game_profile.set_pinned(True)
             self.btn_game_profile.setStyleSheet("""
                 QPushButton {
                     border: 1px solid #4ade80;
@@ -2204,6 +2216,7 @@ class SettingsWindow(QWidget):
             self.btn_game_profile.setText(t("sidebar.pin_game", "Привязать к игре ▾"))
             self.btn_game_profile.setToolTip(t("sidebar.pin_game_tip", "Привязать оверлей к окну игры (авто-скрытие при Alt+Tab)"))
             self.btn_game_profile.setStyleSheet("")
+            self.btn_game_profile.set_pinned(False)
             
             self.settings.set("pinned_exe", "", save=False)
             self.settings.set("pinned_hwnd", 0, save=False)

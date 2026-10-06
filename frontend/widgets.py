@@ -12,7 +12,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QConicalGradient, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -408,3 +408,61 @@ class Toast(QLabel):
     def _on_anim_done(self):
         if self._effect.opacity() < 0.01:
             self.hide()
+
+
+# Кнопка с крутящейся неоновой рамкой
+
+class GlowingPinButton(QPushButton):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._angle = 0.0
+        self._is_pinned = False
+
+        # Аниматор угла вращения (от 0 до 360 градусов)
+        self._anim = QPropertyAnimation(self, b"angle", self)
+        self._anim.setDuration(2000)  # 2 секунды на 1 полный оборот
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(360.0)
+        self._anim.setLoopCount(-1)   # Бесконечный цикл
+
+    def _get_angle(self):
+        return self._angle
+
+    def _set_angle(self, value):
+        self._angle = float(value)
+        self.update()
+
+    angle = Property(float, _get_angle, _set_angle)
+
+    def set_pinned(self, pinned: bool):
+        self._is_pinned = pinned
+        if pinned:
+            self._anim.start()
+            self.setStyleSheet("background: rgba(74, 222, 128, 0.08); color: #4ade80; font-weight: 600; border: none; border-radius: 8px;")
+        else:
+            self._anim.stop()
+            self.setStyleSheet("")  # Сброс к дефолту
+        self.update()
+
+    def paintEvent(self, event):
+        # Рисуем стандартную кнопку (текст, фон)
+        super().paintEvent(event)
+
+        # Рисуем поверх неё крутящийся неоновый след, если привязано
+        if self._is_pinned:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            # Создаём конический градиент (как радар)
+            grad = QConicalGradient(self.rect().center(), self._angle)
+            grad.setColorAt(0.0, QColor(74, 222, 128, 0))     # Прозрачный хвост
+            grad.setColorAt(0.7, QColor(74, 222, 128, 0))     # Пустота
+            grad.setColorAt(0.9, QColor(74, 222, 128, 255))   # Яркая голова «змейки»
+            grad.setColorAt(1.0, QColor(74, 222, 128, 0))     # Резкий срез
+
+            pen = QPen(grad, 1.5)  # Толщина обводки 1.5 px
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            
+            # Рисуем рамку по контуру кнопки (с небольшим отступом внутрь)
+            p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 7, 7)

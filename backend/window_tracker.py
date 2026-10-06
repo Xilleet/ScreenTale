@@ -48,11 +48,12 @@ class WindowInfo:
     hwnd: int
     title: str
     exe_name: str
+    exe_path: str
     rect: QRect
 
 
-def get_window_exe_name(hwnd: int) -> str:
-    """Возвращает имя исполняемого файла (.exe) по дескриптору окна HWND."""
+def get_window_exe_path(hwnd: int) -> str:
+    """Возвращает полный путь к исполняемому файлу (.exe) по дескриптору окна HWND."""
     if not user32:
         return ""
     try:
@@ -60,7 +61,6 @@ def get_window_exe_name(hwnd: int) -> str:
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
 
         kernel32 = ctypes.windll.kernel32
-        # 0x1000 = PROCESS_QUERY_LIMITED_INFORMATION
         h_process = kernel32.OpenProcess(0x1000, False, pid.value)
         if not h_process:
             return ""
@@ -69,13 +69,12 @@ def get_window_exe_name(hwnd: int) -> str:
         size = wintypes.DWORD(1024)
         if kernel32.QueryFullProcessImageNameW(h_process, 0, buf, ctypes.byref(size)):
             kernel32.CloseHandle(h_process)
-            return os.path.basename(buf.value)
+            return buf.value  # Возвращаем полный путь!
 
         kernel32.CloseHandle(h_process)
     except Exception:
         pass
     return ""
-
 
 def get_window_exact_rect(hwnd: int) -> QRect | None:
     """Возвращает точные видимые пиксели окна через DWM (отсекая системные тени Windows 10/11)."""
@@ -145,7 +144,8 @@ def get_running_games() -> list[WindowInfo]:
             return True
 
         # 6. Фильтр системных процессов и самого ScreenTale
-        exe = get_window_exe_name(hwnd)
+        exe_path = get_window_exe_path(hwnd)
+        exe = os.path.basename(exe_path) if exe_path else ""
         if not exe or exe.lower() in SYSTEM_EXCLUDES:
             return True
 
@@ -154,7 +154,7 @@ def get_running_games() -> list[WindowInfo]:
         if not rect or rect.width() < 160 or rect.height() < 160:
             return True
 
-        raw_results.append(WindowInfo(hwnd=hwnd, title=title, exe_name=exe, rect=rect))
+        raw_results.append(WindowInfo(hwnd=hwnd, title=title, exe_name=exe, exe_path=exe_path, rect=rect))
         return True
 
     WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
@@ -189,9 +189,11 @@ def get_active_window() -> WindowInfo | None:
         user32.GetWindowTextW(hwnd, title_buf, title_len + 1)
         title = title_buf.value.strip()
 
-        exe = get_window_exe_name(hwnd)
+        exe_path = get_window_exe_path(hwnd)
+        exe = os.path.basename(exe_path) if exe_path else ""
         rect = get_window_exact_rect(hwnd) or QRect(0, 0, 1920, 1080)
 
-        return WindowInfo(hwnd=hwnd, title=title, exe_name=exe, rect=rect)
+        return WindowInfo(hwnd=hwnd, title=title, exe_name=exe, exe_path=exe_path, rect=rect)
+
     except Exception:
         return None
