@@ -119,6 +119,7 @@ class FloatingToolbar(QFrame):
     stop_clicked = Signal()
     clear_clicked = Signal()
     ghost_clicked = Signal()
+    pin_clicked = Signal()
     lang_pair_clicked = Signal(str, str)
     open_settings_clicked = Signal()
     dock_changed = Signal(bool)
@@ -264,7 +265,14 @@ class FloatingToolbar(QFrame):
         self.btn_lang.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_lang.clicked.connect(self._show_lang_menu)
 
-        # 7. Ручка перетаскивания и открепления
+        # 7. Прикрепление к активному окну
+        self.btn_pin = QPushButton("📌")
+        self.btn_pin.setObjectName("ToolbarBtn")
+        self.btn_pin.setToolTip("Привязать к активному окну игры (Alt-Tab скрытие)")
+        self.btn_pin.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_pin.clicked.connect(self.pin_clicked.emit)
+
+        # 8. Ручка перетаскивания и открепления
         self.btn_grip = _GripButton(self)
 
         lay.addWidget(self.btn_retry)
@@ -272,6 +280,7 @@ class FloatingToolbar(QFrame):
         lay.addWidget(self.btn_stop)
         lay.addWidget(self.btn_clear)
         lay.addWidget(self.btn_ghost)
+        lay.addWidget(self.btn_pin)
         lay.addWidget(self.btn_lang)
         lay.addWidget(self.btn_grip)
 

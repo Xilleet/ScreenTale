@@ -47,6 +47,7 @@ from backend.runtime_manager import (
     is_backend_supported,
 )
 from backend.translators import ENGINE_LABELS
+from backend.window_tracker import WindowInfo, get_running_games
 from frontend.theme import PALETTE, apply_theme
 from frontend.translate_window import _load_ui_icon
 from frontend.widgets import (
@@ -436,6 +437,24 @@ class SettingsWindow(QWidget):
         for name in ("Общие", "Перевод", "Горячие клавиши", "Продвинутые", "О программе"):
             self.nav.addItem(QListWidgetItem(name))
         v.addWidget(self.nav, 1)
+
+        # ========================================================
+        # Выбор игры для привязки (Discord-Style)
+        # ========================================================
+        self.btn_game_profile = QPushButton("Привязать к игре ▾")
+        self.btn_game_profile.setObjectName("Ghost")
+        self.btn_game_profile.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_game_profile.setToolTip("Привязать оверлей к окну конкретной игры (авто-скрытие при Alt+Tab)")
+        self.btn_game_profile.clicked.connect(self._show_game_picker_menu)
+        v.addWidget(self.btn_game_profile)
+        v.addSpacing(4)
+
+        btn_exit = QPushButton("Выйти из программы")
+        btn_exit.setObjectName("Danger")
+        btn_exit.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_exit.clicked.connect(self._handle_exit)
+        v.addWidget(btn_exit)
+        return frame
 
         btn_exit = QPushButton("Выйти из программы")
         btn_exit.setObjectName("Danger")
@@ -1997,6 +2016,50 @@ class SettingsWindow(QWidget):
             self.hide()
         else:
             event.accept()
+
+    def _show_game_picker_menu(self):
+        """Открывает меню запущенных окон для привязки."""
+        menu = QMenu(self)
+        windows = get_running_games()
+
+        # 1. Пункт сброса привязки
+        act_reset = menu.addAction("Работать по всему экрану (Сброс)")
+        act_reset.triggered.connect(lambda: self._select_game_target(None))
+        menu.addSeparator()
+
+        menu.addSection("Запущенные игры и окна:")
+
+        if not windows:
+            act_empty = menu.addAction("(Нет доступных окон)")
+            act_empty.setEnabled(False)
+        else:
+            for w in windows:
+                # Обрезаем слишком длинные заголовки
+                short_title = w.title if len(w.title) <= 28 else w.title[:25] + "..."
+                label = f"🎮 {short_title} ({w.exe_name})"
+                act = menu.addAction(label)
+                act.triggered.connect(lambda _=False, win=w: self._select_game_target(win))
+
+        # Выравниваем меню над кнопкой
+        pos = self.btn_game_profile.mapToGlobal(QPoint(0, 0))
+        menu.exec(pos + QPoint(0, -menu.sizeHint().height() - 4))
+
+    def _select_game_target(self, win: WindowInfo | None):
+        """Сохраняет выбранную игру и уведомляет контроллер."""
+        if win:
+            self.btn_game_profile.setText(f"🟢 {win.exe_name[:12]} ▾")
+            self.btn_game_profile.setToolTip(f"Привязано к окну:\n{win.title} ({win.exe_name})")
+            self.settings.set("pinned_exe", win.exe_name, save=False)
+            self.settings.set("pinned_hwnd", win.hwnd, save=False)
+            self.settings.changed.emit("window_pinned", win)
+            self.toast.show_toast(f"Привязано к: {win.exe_name}")
+        else:
+            self.btn_game_profile.setText("Привязать к игре ▾")
+            self.btn_game_profile.setToolTip("Привязать оверлей к окну игры (авто-скрытие при Alt+Tab)")
+            self.settings.set("pinned_exe", "", save=False)
+            self.settings.set("pinned_hwnd", 0, save=False)
+            self.settings.changed.emit("window_pinned", None)
+            self.toast.show_toast("Привязка сброшена (режим всего экрана)")
 
     def _handle_exit(self):
         self.settings.save()

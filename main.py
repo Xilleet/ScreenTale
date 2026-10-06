@@ -58,6 +58,7 @@ from backend.translators import (
     translate_online,
 )
 from backend.updater import UpdateCheckTask, UpdateDownloadWorker
+from backend.window_tracker import get_active_window, get_window_exact_rect
 from frontend.inplace_canvas import InPlaceCanvas
 from frontend.screen_selector import ScreenSelector
 from frontend.settings_window import SettingsWindow
@@ -257,6 +258,20 @@ class AppController(QObject):
         self.trans_win.toolbar.lang_pair_clicked.connect(self.settings.set_language_pair)
         self.trans_win.toolbar.open_settings_clicked.connect(self.show_settings)
 
+        # Привязанное окно игры (HWND и имя процесса)
+        self._pinned_hwnd = 0
+        self._pinned_exe = ""
+
+        # Таймер отслеживания Alt+Tab (раз в 200 мс)
+        self._focus_timer = QTimer(self)
+        self._focus_timer.setInterval(200)
+        self._focus_timer.timeout.connect(self._track_pinned_window)
+        self._focus_timer.start()
+
+        # Привязываем сигналы тулбара и настроек
+        self.trans_win.toolbar.pin_clicked.connect(self._pin_to_current_active_window)
+        self.settings.changed.connect(self._on_setting_changed)
+
     def _toggle_pause_auto(self):
         if not self._auto_active:
             self.trans_win.show_translation("[Авто-режим не запущен]")
@@ -360,6 +375,18 @@ class AppController(QObject):
     def _start_selection(self):
         if self._is_selecting:
             return
+
+        # Если игра привязана — переводим её окно без рамок ---
+        if self._pinned_hwnd and self.settings.get("overlay_mode") == "inplace":
+            rect = get_window_exact_rect(self._pinned_hwnd)
+            if rect:
+                self.inplace_canvas.clear()
+                bbox = (rect.left(), rect.top(), rect.right(), rect.bottom())
+                self._last_bbox = bbox
+                print(f"[ctrl] 1-Click In-Place: мгновенный захват окна игры {self._pinned_exe} {bbox}")
+                self.ocr.read(bbox, context="single")
+                return
+            
         self._is_selecting = True
         
         # Очищаем старый In-Place, чтобы не фотографировать его заново!
@@ -835,11 +862,15 @@ class AppController(QObject):
             self.inplace_canvas.set_capture_visibility(not bool(value))
         elif key == "overlay_mode":
             if value == "inplace":
+                # Переключились на In-Place: окно чата тихо прячется
                 self.trans_win.hide()
             else:
+                # Переключились на Чат: очищаем холст In-Place, 
+                # а окно чата само откроется при следующем переводе (или если оно уже было открыто)
                 self.inplace_canvas.clear()
                 self.inplace_canvas.hide()
-                self.trans_win.show()
+                if not self.trans_win.force_hidden:
+                    self.trans_win.show()
 
     def _on_delete_model(self, engine_id):
         self.model_manager.unload()
@@ -1077,6 +1108,47 @@ class AppController(QObject):
         else:
             self.trans_win.show_translation("[Нет сохранённой области для повтора]")
 
+    def _pin_to_current_active_window(self):
+        """Быстрая привязка по клику на кнопку 📌 на тулбаре."""
+        active = get_active_window()
+        if active and active.exe_name.lower() not in ("screentale.exe", "python.exe"):
+            self._pinned_hwnd = active.hwnd
+            self._pinned_exe = active.exe_name
+            self.settings_win._select_game_target(active)
+            self.trans_win.show_translation(f"[📌 Привязано к окну: {active.exe_name}]")
+        else:
+            self._pinned_hwnd = 0
+            self._pinned_exe = ""
+            self.settings_win._select_game_target(None)
+            self.trans_win.show_translation("[📌 Привязка сброшена (весь экран)]")
+
+    def _track_pinned_window(self):
+        """Фоновый мониторинг активного окна (Auto-Hide при Alt+Tab)."""
+        if not self._pinned_hwnd:
+            return
+
+        user32 = ctypes.windll.user32 if sys.platform == "win32" else None
+        if not user32:
+            return
+
+        # 1. Проверяем, существует ли окно и не свернуто ли оно
+        if not user32.IsWindow(self._pinned_hwnd) or user32.IsIconic(self._pinned_hwnd):
+            if self.inplace_canvas.isVisible():
+                self.inplace_canvas.hide()
+            return
+
+        # 2. Проверяем, находится ли игра на переднем плане (в фокусе игрока)
+        fg_hwnd = user32.GetForegroundWindow()
+        is_game_active = (fg_hwnd == self._pinned_hwnd)
+
+        # Если игрок переключился в браузер/Discord (Alt+Tab) -> прячем оверлей!
+        if not is_game_active:
+            if self.inplace_canvas.isVisible():
+                self.inplace_canvas.hide()
+        else:
+            # Игрок вернулся в игру -> если есть активный перевод, показываем!
+            if self.inplace_canvas.active_blocks and not self.inplace_canvas.isVisible():
+                self.inplace_canvas.show()
 
 def main():
     # Флаг быстрой консольной диагностики: python main.py --doctor
