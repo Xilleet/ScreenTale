@@ -6,7 +6,15 @@ from ctypes import wintypes
 from dataclasses import dataclass
 
 from PIL import ImageGrab
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -135,7 +143,7 @@ class InPlaceCanvas(QWidget):
         # Таймер автоматического скрытия перевода через 10 секунд бездействия
         self._fade_timer = QTimer(self)
         self._fade_timer.setSingleShot(True)
-        self._fade_timer.timeout.connect(self.clear)
+        self._fade_timer.timeout.connect(self.fade_out_and_clear)
 
         # закрытие по правой кнопке мыши
         self._mouse_timer = QTimer(self)
@@ -163,7 +171,7 @@ class InPlaceCanvas(QWidget):
 
         # 1. ПКМ закрывает активный перевод
         if is_r_down and self.active_blocks:
-            self.clear()
+            self.fade_out_and_clear()
 
         # 2. Ctrl + ЛКМ триггерит точечный перевод под курсором
         if is_l_down and is_ctrl_down and not getattr(self, "_was_ctrl_l_down", False):
@@ -255,9 +263,19 @@ class InPlaceCanvas(QWidget):
                 )
 
         self.active_blocks = new_blocks
+
+        self.setWindowOpacity(0.0)
         self.show()
         self.raise_()
         self.update()
+
+        self._anim_in = QPropertyAnimation(self, b"windowOpacity")
+        self._anim_in.setDuration(180)  # Плавное появление
+        self._anim_in.setStartValue(0.0)
+        self._anim_in.setEndValue(1.0)
+        self._anim_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim_in.start()
+
         self._fade_timer.start(12000)
 
     def clear(self):
@@ -342,3 +360,23 @@ class InPlaceCanvas(QWidget):
             if msg.message == 0x0084:  # WM_NCHITTEST
                 return True, -1
         return super().nativeEvent(eventType, message)
+
+    def fade_out_and_clear(self):
+        """Плавное растворение плашек перед очисткой (вызывается по ПКМ)."""
+        if not self.active_blocks or getattr(self, "_is_fading_out", False):
+            return
+            
+        self._is_fading_out = True
+        self._fade_timer.stop()
+
+        self._anim_out = QPropertyAnimation(self, b"windowOpacity")
+        self._anim_out.setDuration(120)  # Быстрое и мягкое затухание
+        self._anim_out.setStartValue(self.windowOpacity())
+        self._anim_out.setEndValue(0.0)
+        
+        def _on_hidden():
+            self.clear()
+            self._is_fading_out = False
+
+        self._anim_out.finished.connect(_on_hidden)
+        self._anim_out.start()
