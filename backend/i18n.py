@@ -13,11 +13,16 @@ _fallback_translations: dict[str, str] = {}
 
 
 def get_locales_dir() -> str:
-    """Возвращает путь к папке locales/ рядом с программой."""
+    """Возвращает путь к папке locales/ рядом с программой или из _internal."""
     d = os.path.join(get_app_dir(), "locales")
+    # Если в корне папки нет или она пустая, проверяем распакованный PyInstaller (_MEIPASS)
+    if (not os.path.isdir(d) or not os.listdir(d)) and hasattr(sys, "_MEIPASS"):
+        d_internal = os.path.join(sys._MEIPASS, "locales")
+        if os.path.isdir(d_internal):
+            return d_internal
+
     os.makedirs(d, exist_ok=True)
     return d
-
 
 def detect_system_ui_lang() -> str:
     """Определяет язык интерфейса Windows."""

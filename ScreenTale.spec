@@ -1,11 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files, copy_metadata
+from PyInstaller.utils.hooks import collect_all, collect_data_files, copy_metadata
 
-# 1. Явно указываем скрытые библиотеки, которые импортируются внутри потоков/функций
+# 1. Скрытые модули (включая зависимости deep_translator и winrt)
 hidden_imports = [
     'winocr',
-    'rapidocr_onnxruntime',
-    'onnxruntime',
+    'winrt',
+    'winrt.system',
     'winrt.windows.foundation',
     'winrt.windows.foundation.collections',
     'winrt.windows.globalization',
@@ -18,19 +18,35 @@ hidden_imports = [
     'transformers',
     'huggingface_hub',
     'deep_translator',
+    'bs4',                 
+    'soupsieve',           
     'pyperclip',
     'PIL',
     'PIL.Image',
     'PIL.ImageGrab',
 ]
 
-# 2. Обязательные метаданные для HuggingFace и иконки приложения
+# 2. Обязательные ресурсы приложения
 datas = [
     ('ScreenTale.ico', '.'),
     ('logo.png', '.'),
     ('frontend/icons', 'frontend/icons'),
+    ('locales', 'locales'), # <--- Языковые файлы интерфейса (en.json, ru.json)
 ]
-for pkg in ['transformers', 'huggingface_hub', 'tqdm', 'regex', 'requests', 'rapidocr_onnxruntime']:
+binaries = []
+
+# 3. Полный сборщик для ONNX Runtime и OCR (собирает DLL, манифесты и данные)
+for pkg in ['rapidocr_onnxruntime', 'onnxruntime']:
+    try:
+        p_datas, p_binaries, p_hidden = collect_all(pkg)
+        datas += p_datas
+        binaries += p_binaries
+        hidden_imports += p_hidden
+    except Exception:
+        pass
+
+# Метаданные для нейросетевых библиотек
+for pkg in ['transformers', 'huggingface_hub', 'tqdm', 'regex', 'requests']:
     try:
         datas += collect_data_files(pkg)
         datas += copy_metadata(pkg)
@@ -40,7 +56,7 @@ for pkg in ['transformers', 'huggingface_hub', 'tqdm', 'regex', 'requests', 'rap
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=binaries,       # <--- Передаём собранные C++ DLL онникса
     datas=datas,
     hiddenimports=hidden_imports,
     hookspath=[],
@@ -71,7 +87,7 @@ exe = EXE(
     icon=['ScreenTale.ico'],
 )
 
-# 3. Файлы, которые должны лежать строго в корне рядом с ScreenTale.exe (не в _internal)
+# Файлы, которые должны лежать строго в корне рядом с ScreenTale.exe
 root_files = [
     ('debug_diagnostics.py', 'debug_diagnostics.py', 'DATA'),
 ]
@@ -80,7 +96,7 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    root_files,  # <--- Добавляем файл напрямую в корень папки сборки
+    root_files,
     strip=False,
     upx=False,
     upx_exclude=[],

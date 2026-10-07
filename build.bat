@@ -64,12 +64,17 @@ echo.
 if exist "ScreenTale.spec" (
     .venv\Scripts\pyinstaller --noconfirm --clean ScreenTale.spec
 ) else (
-    .venv\Scripts\pyinstaller --noconfirm --onedir --console --name "ScreenTale" --icon "ScreenTale.ico" --add-data "ScreenTale.ico;." --add-data "icons;icons" --add-data "logo.png;." --clean main.py
+    .venv\Scripts\pyinstaller --noconfirm --onedir --console --name "ScreenTale" --icon "ScreenTale.ico" --add-data "ScreenTale.ico;." --add-data "frontend/icons;frontend/icons" --add-data "locales;locales" --add-data "logo.png;." --clean main.py
 )
 
 :: Подстраховка: копируем скрипт диагностики в корень рядом с exe
 if exist "debug_diagnostics.py" (
     copy /y "debug_diagnostics.py" "dist\ScreenTale\debug_diagnostics.py" > nul
+)
+
+:: Копируем папку locales в корень рядом с exe (чтобы файлы перевода были открыты и редактируемы)
+if exist "locales" (
+    xcopy "locales" "dist\ScreenTale\locales\" /s /e /y /q > nul
 )
 
 if %ERRORLEVEL% NEQ 0 (
