@@ -59,7 +59,7 @@ from backend.translators import (
     translate_online,
 )
 from backend.updater import UpdateCheckTask, UpdateDownloadWorker
-from backend.window_tracker import get_active_window, get_window_exact_rect
+from backend.window_tracker import get_active_window  # get_window_exact_rect
 from frontend.inplace_canvas import InPlaceCanvas
 from frontend.screen_selector import ScreenSelector
 from frontend.settings_window import SettingsWindow
@@ -116,6 +116,29 @@ def _short(text, limit=180):
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[:limit] + "…"
 
+def parse_structured_translation(translated_text: str, expected_count: int) -> list[str]:
+    """Разбирает ответ нейросети по тегам [1], [2] или переносам строк."""
+    import re
+    # Ищем блоки вида [1] ... [2] ...
+    matches = re.findall(r'\[(\d+)\]\s*(.*?)(?=(?:\[\d+\])|\Z)', translated_text, re.DOTALL)
+    if matches:
+        indexed = {}
+        for idx_str, content in matches:
+            try:
+                indexed[int(idx_str)] = content.strip()
+            except ValueError:
+                pass
+        result = [indexed.get(i, "") for i in range(1, expected_count + 1)]
+        if any(result):
+            return result
+
+    # Фоллбэк: если нейросеть просто разделила строки через Enter
+    lines = [ln.strip() for ln in translated_text.split("\n") if ln.strip()]
+    if len(lines) >= expected_count:
+        return lines[:expected_count]
+
+    # Если пришла одна строка — отдаем её первому бабблу
+    return [translated_text] + [""] * (expected_count - 1)
 
 class AppController(QObject):
     translation_ready = Signal(int, str)          # seq, текст
@@ -384,30 +407,42 @@ class AppController(QObject):
 
     # ---------- выделение области и OCR ----------
     def _start_selection(self):
-        if self._is_selecting:
-            return
+     """Alt+Q: 1-Click захват привязанного ИЛИ активного окна игры без рамок."""
+     if self._is_selecting:
+         return
 
-        # Если игра привязана — переводим её окно без рамок ---
-        if self._pinned_hwnd and self.settings.get("overlay_mode") == "inplace":
-            rect = get_window_exact_rect(self._pinned_hwnd)
-            if rect:
-                self.inplace_canvas.clear()
-                bbox = (rect.left(), rect.top(), rect.right(), rect.bottom())
-                self._last_bbox = bbox
-                print(f"[ctrl] 1-Click In-Place: мгновенный захват окна игры {self._pinned_exe} {bbox}")
-                self.ocr.read(bbox, context="single")
-                return
-            
-        self._is_selecting = True
-        
-        # Очищаем старый In-Place, чтобы не фотографировать его заново!
-        self.inplace_canvas.clear()
+     mode = self.settings.get("overlay_mode", "chat")
 
-        self._was_trans_win_visible = self.trans_win.isVisible() and not self.trans_win.force_hidden
-        if self._was_trans_win_visible:
-            self.trans_win.hide()
+     if mode == "inplace":
+         from backend.window_tracker import get_active_window, get_window_exact_rect
+         
+         # 1. Берем привязанное окно ИЛИ текущее активное окно под фокусом
+         target_hwnd = self._pinned_hwnd
+         if not target_hwnd:
+             active = get_active_window()
+             if active and active.exe_name.lower() not in ("screentale.exe", "python.exe", "explorer.exe"):
+                 target_hwnd = active.hwnd
+                 print(f"[ctrl] Авто-захват активного окна под курсором: {active.exe_name}")
 
-        self.selector = ScreenSelector(self._on_area_selected, on_cancel=self._on_selection_cancel)
+         if target_hwnd:
+             rect = get_window_exact_rect(target_hwnd)
+             if rect and rect.width() > 200 and rect.height() > 200:
+                 self.inplace_canvas.clear()
+                 bbox = (rect.left(), rect.top(), rect.right(), rect.bottom())
+                 self._last_bbox = bbox
+                 print(f"[ctrl] 1-Click In-Place (Alt+Q): захват окна игры {bbox}")
+                 self.ocr.read(bbox, context="single")
+                 return
+
+     # Если ничего не привязано и не активно — стандартное ручное выделение рамкой
+     self._is_selecting = True
+     self.inplace_canvas.clear()
+     
+     self._was_trans_win_visible = self.trans_win.isVisible() and not self.trans_win.force_hidden
+     if self._was_trans_win_visible:
+         self.trans_win.hide()
+
+     self.selector = ScreenSelector(self._on_area_selected, on_cancel=self._on_selection_cancel)
 
     def _on_area_selected(self, bbox):
         self._is_selecting = False
@@ -434,7 +469,13 @@ class AppController(QObject):
         print(f"[ctrl] read_result ctx={context}, блоков с координатами: {len(blocks)}: {text[:50]!r}")
         vlog(f"[ctrl] read_result (full) ctx={context}: {text!r}")
 
-        # --- ТОЧЕЧНЫЙ ПЕРЕВОД ПО КЛИКУ (Ctrl + ЛКМ) ---
+        if any(tag in text.lower() for tag in ("[ctrl]", "[auto]", "[inplace]")):
+            vlog("[ctrl] Обнаружен собственный интерфейс в кадре — сбрасываем кадр")
+            return
+
+        # ------------------------------------------------------------------
+        # 1. ОБРАБОТКА ТОЧЕЧНОГО КЛИКА (Ctrl + ЛКМ по конкретной фразе)
+        # ------------------------------------------------------------------
         if context == "point_lookup":
             if not blocks or text.startswith("["):
                 return
@@ -444,7 +485,6 @@ class AppController(QObject):
             if not clusters:
                 return
 
-            # Ищем баббл, в который попал курсор (Hit-Test с допуском 12px)
             click_pt = getattr(self, "_last_lookup_pos", None)
             target_cluster = None
 
@@ -454,7 +494,6 @@ class AppController(QObject):
                         target_cluster = c
                         break
 
-            # Если точного попадания нет — берём ближайший к курсору баббл
             if not target_cluster and clusters and click_pt:
                 target_cluster = min(
                     clusters, 
@@ -465,22 +504,32 @@ class AppController(QObject):
                 target_text = target_cluster["text"].strip()
                 if target_text:
                     print(f"[ctrl] Выделен целевой баббл под мышкой: {target_text!r}")
-                    # Сохраняем ТОЛЬКО строки этого конкретного баббла
-                    self._last_blocks = [b for b in blocks if target_cluster["rect"].contains(b["rect"].center())] or blocks
+                    
+                    # ИСПРАВЛЕНО: у b['rect'] формат (x, y, w, h), переводим в QRect для .center() и .contains()
+                    self._last_blocks = [
+                        b for b in blocks 
+                        if target_cluster["rect"].contains(QRect(*b["rect"]).center())
+                    ] or blocks
+                    
                     self._last_source = target_text
-                    self._request_translation(target_text)
+                    self._request_translation(target_text, blocks=self._last_blocks)
             return
 
-        # 1. ЗАЩИТА ОТ САМОПЕРЕВОДА (проверяем только реальный текст, не системные сообщения в скобках [ )
+        # ------------------------------------------------------------------
+        # 2. ЗАЩИТА ОТ САМОПЕРЕВОДА (игнорируем уже готовый русский текст)
+        # ------------------------------------------------------------------
         src_lang = self.settings.get("src_lang", "en")
         dst_lang = self.settings.get("dst_lang", "ru")
         if not text.startswith("[") and src_lang != dst_lang and is_target_script(text, dst_lang):
             vlog(f"[ctrl] На экране обнаружен готовый перевод ({dst_lang}) — пропускаем кадр")
             return
 
-        # 2. Сохраняем блоки для In-Place
+        # Сохраняем актуальные блоки координат для In-Place
         self._last_blocks = blocks
 
+        # ------------------------------------------------------------------
+        # 3. ОБРАБОТКА АВТО-РЕЖИМА (Alt + W)
+        # ------------------------------------------------------------------
         if context == "auto":
             if getattr(self, "_is_translating", False):
                 vlog("[ctrl] Переводчик занят генерацией — пропускаем промежуточный такт")
@@ -503,14 +552,35 @@ class AppController(QObject):
             self._auto_timer.start(int(self.settings.get("auto_delay_ms", 800)))
             return
 
-        self.trans_win.show_translation(text)
+        # ------------------------------------------------------------------
+        # 4. ОБРАБОТКА ОДИНОЧНОГО РЕЖИМА (Alt + Q / 1-Click)
+        # ------------------------------------------------------------------
+        mode = self.settings.get("overlay_mode", "chat")
+        
+        # Окно-чат показываем ТОЛЬКО если активен режим 'chat'!
+        if mode != "inplace":
+            self.trans_win.show_translation(text)
+
         if text.startswith("["):
             return
+
         self._last_source = text
-        self._request_translation(text)
+
+        # Умная структурированная передача мульти-бабблов для In-Place
+        if mode == "inplace" and blocks:
+            from frontend.inplace_canvas import cluster_lines
+            clusters = cluster_lines(blocks)
+            if len(clusters) > 1:
+                numbered_prompt = "\n".join(f"[{i + 1}] {c['text']}" for i, c in enumerate(clusters))
+                print(f"[ctrl] Структурированный запрос из {len(clusters)} бабблов:\n{numbered_prompt}")
+                self._request_translation(numbered_prompt, blocks=blocks)
+                return
+
+        self._request_translation(text, blocks=blocks)
 
     # ---------- авто-режим ----------
     def _toggle_auto_mode(self):
+        """Alt+W: включение/выключение авто-режима по выбранной зоне."""
         if self._auto_active:
             self._stop_auto_mode()
         elif not self._is_selecting:
@@ -663,11 +733,14 @@ class AppController(QObject):
         self._request_translation(text)
 
     # ---------- перевод ----------
-    def _request_translation(self, text):
+    def _request_translation(self, text, blocks=None):
         if not text.strip():
             return
 
         self._is_translating = True
+
+        # Сохраняем blocks в фоновые переводы для этой последовательности (seq)
+        target_blocks = blocks if blocks is not None else getattr(self, "_last_blocks", [])
 
         # Получаем выбранную языковую пару из настроек
         src_lang = self.settings.get("src_lang", "en")
@@ -694,7 +767,8 @@ class AppController(QObject):
 
         print(f"[ctrl] запрос перевода ({src_lang.upper()} -> {dst_lang.upper()}): движок={engine}, seq={seq}")
         self._pending_translations[seq] = [
-            time.strftime("%H:%M:%S"), time.monotonic(), text, None]
+            time.strftime("%H:%M:%S"), time.monotonic(), text, None, target_blocks
+        ]
         self.trans_win.set_status("busy", "Перевод…")
 
         if engine in LOCAL_ENGINES:
@@ -746,7 +820,10 @@ class AppController(QObject):
             entry = self._pending_translations.get(next_seq)
             if entry is None:
                 return
-            timestamp, sent_mono, source, translation = entry
+            if len(entry) >= 5:
+                timestamp, sent_mono, source, translation, _blocks = entry[:5]
+            else:
+                timestamp, sent_mono, source, translation = entry
             if translation is None:
                 if next_seq in self._loading_queue:
                     return
@@ -769,13 +846,18 @@ class AppController(QObject):
             else:
                 mode = self.settings.get("overlay_mode", "chat")
                 if mode == "inplace":
-                    # Режим In-Place: окно чата скрыто, рисуем прямо на игре!
                     self.trans_win.hide()
-                    blocks = getattr(self, "_last_blocks", None)
+                    blocks = entry[4] if len(entry) > 4 else getattr(self, "_last_blocks", [])
                     if blocks:
-                        self.inplace_canvas.display_translation(blocks, translation)
+                        from frontend.inplace_canvas import cluster_lines
+                        clusters = cluster_lines(blocks)
+                        if len(clusters) > 1:
+                            translations = parse_structured_translation(translation, len(clusters))
+                            self.inplace_canvas.display_structured_translation(clusters, translations)
+                        else:
+                            clean_trans = re.sub(r"^\[1\]\s*", "", translation).strip()
+                            self.inplace_canvas.display_structured_translation(clusters, [clean_trans])
                 else:
-                    # Режим Чат: окно активно, плашка на экране выключена
                     self.inplace_canvas.clear()
                     self.inplace_canvas.hide()
                     self.trans_win.show_translation(f"({timestamp}) {translation}")

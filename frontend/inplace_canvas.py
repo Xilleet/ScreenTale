@@ -27,31 +27,65 @@ class InPlaceBlock:
     font_size: int
     angle: float = 0.0
 
-
-def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 1.8) -> list[dict]:
-    """Группирует близкие строки в отдельные смысловые бабблы по пространственной близости.
-    Текст в левом углу и текст в правом углу сформируют РАЗНЫЕ независимые плашки!
+def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 1.15) -> list[dict]:
+    """Усовершенствованная кластеризация для сложных интерфейсов и бабблов.
+    Отсеивает одиночный мусор OCR и предотвращает слипание независимых блоков.
     """
     if not blocks:
         return []
 
-    sorted_blocks = sorted(blocks, key=lambda b: b["rect"][1])
+    # 1. Отсеиваем очевидный шум OCR (одиночные символы, кроме знаков препинания диалогов)
+    valid_blocks = []
+    for b in blocks:
+        txt = b.get("text", "").strip()
+        if not txt:
+            continue
+        # Пропускаем одиночные буквы-артефакты (i, e, o, \) если это не знаки диалога
+        if len(txt) == 1 and txt not in ("!", "?", "—", "-"):
+            continue
+        valid_blocks.append(b)
+
+    if not valid_blocks:
+        return []
+
+    # Сортируем: сверху вниз по Y, затем слева направо по X
+    sorted_blocks = sorted(valid_blocks, key=lambda b: (b["rect"][1], b["rect"][0]))
     clusters = []
 
     for b in sorted_blocks:
         bx, by, bw, bh = b["rect"]
         placed = False
+
         for c in clusters:
             cx, cy, cw, ch = c["rect"]
             c_bottom = cy + ch
             v_gap = by - c_bottom
             avg_h = (ch + bh) / 2
-            h_overlap = max(0, min(cx + cw, bx + bw) - max(cx, bx))
-            min_w = min(cw, bw)
 
-            # Если строка лежит строго под бабблом и перекрывается по ширине
-            if -avg_h * 0.5 <= v_gap <= avg_h * max_v_gap_ratio and (h_overlap / max(min_w, 1)) > 0.2:
+            # А. Проверяем слова на одной горизонтальной строке
+            v_overlap = max(0, min(cy + ch, by + bh) - max(cy, by))
+            h_gap = bx - (cx + cw)
+            same_line = (v_overlap >= 0.6 * min(ch, bh)) and (-5 <= h_gap <= 2.0 * avg_h)
+
+            # Б. Проверяем следующую строку того же абзаца/баббла
+            h_left = max(cx, bx)
+            h_right = min(cx + cw, bx + bw)
+            h_overlap = max(0, h_right - h_left)
+            min_w = min(cw, bw)
+            
+            horizontal_aligned = (h_overlap / max(min_w, 15)) >= 0.45
+            current_cluster_height = (c_bottom - cy) + bh
+            not_too_tall = current_cluster_height <= 140
+
+            next_line = (
+                -avg_h * 0.2 <= v_gap <= avg_h * max_v_gap_ratio 
+                and horizontal_aligned 
+                and not_too_tall
+            )
+
+            if same_line or next_line:
                 c["texts"].append(b["text"])
+                c["blocks"].append(b)
                 nx = min(cx, bx)
                 ny = min(cy, by)
                 nw = max(cx + cw, bx + bw) - nx
@@ -59,17 +93,30 @@ def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 1.8) -> list[dict
                 c["rect"] = [nx, ny, nw, nh]
                 placed = True
                 break
+
         if not placed:
-            clusters.append({"texts": [b["text"]], "rect": list(b["rect"])})
+            clusters.append({
+                "texts": [b["text"]],
+                "blocks": [b],
+                "rect": list(b["rect"])
+            })
+
+    # Ограничиваем максимальное количество одновременных плашек до разумных 12
+    # (отсекая мелкие паразитные кнопки по краям)
+    if len(clusters) > 12:
+        clusters.sort(key=lambda c: len(" ".join(c["texts"])), reverse=True)
+        clusters = clusters[:12]
+        # Возвращаем естественный порядок чтения (сверху-вниз)
+        clusters.sort(key=lambda c: c["rect"][1])
 
     return [
         {
             "text": " ".join(c["texts"]),
             "rect": QRect(c["rect"][0], c["rect"][1], c["rect"][2], c["rect"][3]),
+            "blocks": c["blocks"],
         }
         for c in clusters
     ]
-
 
 def sample_background_color(rect: QRect) -> QColor:
     """Замеряет цвет фона по 4 углам с отступом 3px (Хамелеон)."""
@@ -156,127 +203,122 @@ class InPlaceCanvas(QWidget):
 
     def _check_mouse_actions(self):
         """Слушает клики мыши: 
-        - ПКМ: мгновенно убирает перевод с экрана.
-        - Ctrl + ЛКМ: запрашивает точечный перевод фразы под курсором!
+        - ПКМ (0x02): мгновенно убирает перевод с экрана.
+        - СКМ / Колесико (0x04): запрашивает точечный перевод фразы под курсором!
         """
         if sys.platform != "win32":
             return
 
         user32 = ctypes.windll.user32
+        
         # 0x02 = VK_RBUTTON (ПКМ)
         is_r_down = bool(user32.GetAsyncKeyState(0x02) & 0x8000)
-        # 0x01 = VK_LBUTTON (ЛКМ), 0x11 = VK_CONTROL (Ctrl)
-        is_l_down = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
-        is_ctrl_down = bool(user32.GetAsyncKeyState(0x11) & 0x8000)
+        # 0x04 = VK_MBUTTON (Клик на Колесико / СКМ)
+        is_m_down = bool(user32.GetAsyncKeyState(0x04) & 0x8000)
 
         # 1. ПКМ закрывает активный перевод
         if is_r_down and self.active_blocks:
             self.fade_out_and_clear()
 
-        # 2. Ctrl + ЛКМ триггерит точечный перевод под курсором
-        if is_l_down and is_ctrl_down and not getattr(self, "_was_ctrl_l_down", False):
+        # 2. Клик на СКМ (Колесико) триггерит точечный перевод под курсором
+        # Защита от спама (срабатывает ровно один раз на нажатие, пока не отпустишь)
+        if is_m_down and not getattr(self, "_was_m_down", False):
             pos = QCursor.pos()
-            print(f"[inplace] Сработал Ctrl + ЛКМ в точке ({pos.x()}, {pos.y()})")
+            print(f"[inplace] Сработал СКМ (Колесико) в точке ({pos.x()}, {pos.y()})")
             self.point_translate_requested.emit(pos)
 
-        self._was_ctrl_l_down = is_l_down and is_ctrl_down
+        self._was_m_down = is_m_down
 
-    def display_translation(self, raw_blocks: list[dict], translated_text: str):
-        """Принимает сырые строки OCR и отображает плашки перевода с расчётом угла наклона."""
-        if not raw_blocks or not translated_text.strip():
+    def display_structured_translation(self, clusters: list[dict], translated_texts: list[str]):
+        """Отрисовывает каждый независимый кластер на экране СВОЁЙ собственной плашкой!"""
+        if not clusters or not translated_texts:
             return
-
-        clusters = cluster_lines(raw_blocks)
-        if not clusters:
-            return
-
-        # 1. Вычисляем угол наклона по полигону первой строки (atan2)
-        angle = 0.0
-        if raw_blocks and "polygon" in raw_blocks[0]:
-            poly = raw_blocks[0]["polygon"]
-            if len(poly) >= 2:
-                dx = poly[1][0] - poly[0][0]
-                dy = poly[1][1] - poly[0][1]
-                calc_angle = math.degrees(math.atan2(dy, dx))
-                if abs(calc_angle) >= 1.5:
-                    angle = calc_angle
 
         new_blocks = []
 
-        # 2. Если один смысловой блок (основной случай диалогов/цитат)
-        if len(clusters) == 1:
-            target_rect = clusters[0]["rect"]
-            padded_rect = target_rect.adjusted(-8, -6, 8, 6)
+        for i, c in enumerate(clusters):
+            txt = translated_texts[i].strip() if i < len(translated_texts) else ""
+            if not txt or txt == "[skip]":
+                continue
+
+            target_rect = c["rect"]
+            padded_rect = target_rect.adjusted(-6, -4, 6, 4)
+
+            # Вычисляем угол наклона (atan2)
+            angle = 0.0
+            if c.get("blocks") and "polygon" in c["blocks"][0]:
+                poly = c["blocks"][0]["polygon"]
+                if len(poly) >= 2:
+                    dx = poly[1][0] - poly[0][0]
+                    dy = poly[1][1] - poly[0][1]
+                    calc_angle = math.degrees(math.atan2(dy, dx))
+                    if abs(calc_angle) >= 1.5:
+                        angle = calc_angle
+
+            # Замер цвета фона «Хамелеон»
             bg_color = sample_background_color(padded_rect)
             bg_color.setAlpha(245)
 
+            # Автоподбор шрифта
             font_size = find_optimal_font_size(
-                translated_text, padded_rect.width() - 16, padded_rect.height() - 10
+                txt, padded_rect.width() - 12, padded_rect.height() - 8
             )
 
+            # Адаптивный рост плашки вниз
             metrics = QFontMetrics(QFont("Segoe UI", font_size, QFont.Weight.Bold))
             calc_rect = metrics.boundingRect(
-                QRect(0, 0, padded_rect.width() - 16, 0),
+                QRect(0, 0, padded_rect.width() - 12, 0),
                 Qt.TextFlag.TextWordWrap,
-                translated_text,
+                txt,
             )
-
-            needed_height = calc_rect.height() + 16
-            if needed_height > padded_rect.height():
-                padded_rect.setHeight(needed_height)
-
-            print(
-                f"[inplace] Отрисовка: оригинал {target_rect} -> плашка {padded_rect}, "
-                f"угол={angle:.1f}°, шрифт={font_size}px, цвет={bg_color.name()}"
-            )
+            if calc_rect.height() + 10 > padded_rect.height():
+                padded_rect.setHeight(calc_rect.height() + 10)
 
             new_blocks.append(
                 InPlaceBlock(
                     rect=padded_rect,
-                    text=translated_text,
+                    text=txt,
                     bg_color=bg_color,
                     font_size=font_size,
                     angle=angle,
                 )
             )
-        else:
-            # Если несколько независимых бабблов в разных углах экрана
-            lines = [ln.strip() for ln in translated_text.split("\n") if ln.strip()]
-            for i, c in enumerate(clusters):
-                txt = lines[i] if i < len(lines) else (translated_text if i == 0 else "")
-                if not txt:
-                    continue
-                target_rect = c["rect"]
-                padded_rect = target_rect.adjusted(-6, -4, 6, 4)
-                bg_color = sample_background_color(padded_rect)
-                bg_color.setAlpha(245)
-                font_size = find_optimal_font_size(txt, padded_rect.width() - 12, padded_rect.height() - 8)
 
-                new_blocks.append(
-                    InPlaceBlock(
-                        rect=padded_rect,
-                        text=txt,
-                        bg_color=bg_color,
-                        font_size=font_size,
-                        angle=angle,
-                    )
-                )
-
+        print(f"[inplace] Отрисовано независимых плашек: {len(new_blocks)}")
         self.active_blocks = new_blocks
-
+        
         self.setWindowOpacity(0.0)
         self.show()
         self.raise_()
         self.update()
 
         self._anim_in = QPropertyAnimation(self, b"windowOpacity")
-        self._anim_in.setDuration(180)  # Плавное появление
+        self._anim_in.setDuration(180)
         self._anim_in.setStartValue(0.0)
         self._anim_in.setEndValue(1.0)
         self._anim_in.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim_in.start()
 
         self._fade_timer.start(12000)
+
+    def display_translation(self, raw_blocks: list[dict], translated_text: str):
+        """Интеллектуальный роутер: делит текст на кластеры и раскладывает по плашкам."""
+        clusters = cluster_lines(raw_blocks)
+        if not clusters:
+            return
+
+        # Если кластер один — отдаем весь перевод ему
+        if len(clusters) == 1:
+            self.display_structured_translation(clusters, [translated_text])
+            return
+
+        # Если строк несколько, пробуем разбить по переносам строк
+        lines = [ln.strip() for ln in translated_text.split("\n") if ln.strip()]
+        if len(lines) < len(clusters):
+            # Добиваем пустыми или оригиналом
+            lines += [""] * (len(clusters) - len(lines))
+
+        self.display_structured_translation(clusters, lines)
 
     def clear(self):
         """Очистить холст."""

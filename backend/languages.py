@@ -142,6 +142,7 @@ def build_llm_system_prompt(src_code: str, dst_code: str) -> str:
         f"Translate the given text from {src_name} into natural, fluent {dst_name}.\n"
         f"- Keep the translation CONCISE, compact, and punchy to fit strict game UI limits.\n"
         f"- Drop unnecessary pronouns and filler words without losing core meaning.\n"
+        f"- If the input contains numbered blocks like '[1] ...\\n[2] ...', maintain the EXACT same numbering and line breaks: '[1] ...\\n[2] ...'. Do not merge them!\n"
         f"- Fix minor OCR glitches silently. Keep the character's tone and emotion.\n"
         f"- Output ONLY the final translation, without notes, explanations, or quotes."
     )

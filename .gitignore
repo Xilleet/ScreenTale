@@ -175,3 +175,7 @@ data/doctor_report.json
 Новая папка/backend/runtime_manager.py
 Новая папка/logo.png
 Новая папка/frontend/inplace_canvas.py
+Новая папка/backend/i18n.py
+Новая папка/backend/window_tracker.py
+Новая папка/frontend/icons/chat_32.png
+Новая папка/frontend/icons/inplace_32.png
