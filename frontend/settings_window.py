@@ -1541,7 +1541,7 @@ class SettingsWindow(QWidget):
         self._update_cache_display()
 
     def _on_translator_changed(self, ident):
-        self.translator_hint.setText(get_translator_hint(ident).get(ident, ""))
+        self.translator_hint.setText(get_translator_hint(ident))
         self.settings.set("translator", ident)
         self._update_lang_lock_state()
         self._saved_timer.start()
@@ -1549,9 +1549,8 @@ class SettingsWindow(QWidget):
         # и в QThread загрузит/выгрузит локальную модель (с прогрессом в gpu_bar).
 
     def _on_ocr_changed(self, ident):
-        self.ocr_hint.setText(get_ocr_hint(ident).get(ident, ""))
+        self.ocr_hint.setText(get_ocr_hint(ident))
         self.settings.set("ocr_engine", ident)
-        # Показываем Tategaki только для RapidOCR:
         self.dir_row.setVisible(ident == "rapidocr")
         self._update_ocr_lang_warning()
         self._saved_timer.start()
