@@ -720,9 +720,10 @@ class AppController(QObject):
     def _on_region_changed(self):
         if not self._auto_active or self._auto_bbox is None or self._auto_paused:
             return
-        if not self.trans_win.isVisible() or self.trans_win.force_hidden:
+        mode = self.settings.get("overlay_mode", "chat")
+        # Проверяем видимость окна чата ТОЛЬКО если мы в режиме чата
+        if mode != "inplace" and (not self.trans_win.isVisible() or self.trans_win.force_hidden):
             return
-        print("[auto] region_changed -> ocr.read()")
         self.ocr.read(self._auto_bbox, context="auto")
 
     def _execute_auto_translate(self):
@@ -856,6 +857,7 @@ class AppController(QObject):
                     self.trans_win.hide()
                     blocks = entry[4] if len(entry) > 4 else getattr(self, "_last_blocks", [])
                     if blocks:
+                        self.trans_win.hide()
                         from frontend.inplace_canvas import cluster_lines
                         clusters = cluster_lines(blocks)
                         if len(clusters) > 1:

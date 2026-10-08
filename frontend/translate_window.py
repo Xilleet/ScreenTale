@@ -754,10 +754,9 @@ class TranslateWindow(QWidget):
         elif key == "text_outline":
             self._text_outline = bool(value)
             self.update_font_size(self._font_size)
+            self._apply_text_shadow(bool(value))
         elif key == "opacity":
             self.update_opacity(float(value))
-        elif key == "text_outline": 
-            self._apply_text_shadow(bool(value))
 
     # frontend/translate_window.py -> класс TranslateWindow
 

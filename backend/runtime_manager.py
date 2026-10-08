@@ -217,7 +217,7 @@ def is_backend_supported(backend_id: str) -> tuple[bool, str]:
             import ctypes
             nvml = ctypes.WinDLL("nvml.dll")
             if nvml.nvmlInit_v2() == 0:
-                nvml.nvmlShutdown()
+                # НЕ вызываем nvmlShutdown(), чтобы не ломать монитор VRAM в translators.py!
                 return True, ""
         except Exception:
             pass
