@@ -284,6 +284,11 @@ class InPlaceCanvas(QWidget):
                 )
             )
 
+            # Останавливаем затухание, если оно шло в этот момент
+            if hasattr(self, "_anim_out") and self._anim_out.state() == QPropertyAnimation.State.Running:
+                self._anim_out.stop()
+            self._is_fading_out = False
+
         print(f"[inplace] Отрисовано независимых плашек: {len(new_blocks)}")
         self.active_blocks = new_blocks
         

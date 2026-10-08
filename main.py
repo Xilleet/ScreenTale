@@ -75,18 +75,23 @@ os.environ.setdefault("OMP_NUM_THREADS", "4")
 os.makedirs(_local_hf, exist_ok=True)
 
 def is_target_script(text: str, dst_lang: str) -> bool:
-    """Определяет, написан ли текст на целевом языке (чтобы не переводить собственный перевод)."""
-    if not text:
+    """Определяет, состоит ли текст преимущественно из целевого алфавита."""
+    if not text or len(text.strip()) < 3:
         return False
+    
+    clean = "".join(text.split())
+    if not clean:
+        return False
+
     if dst_lang == "ru":
-        # Кириллица
-        return bool(re.search(r"[а-яА-ЯёЁ]", text))
-    elif dst_lang in ("ja", "zh"):
-        # Иероглифы CJK / Кана
-        return bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff]", text))
+        cyr_count = len(re.findall(r"[а-яА-ЯёЁ]", clean))
+        # Считаем переводом, только если кириллицы больше 25% от всех символов
+        return (cyr_count / len(clean)) >= 0.25
+        
     elif dst_lang == "ko":
-        # Хангыль
-        return bool(re.search(r"[\uac00-\ud7af]", text))
+        hangul_count = len(re.findall(r"[\uac00-\ud7af]", clean))
+        return (hangul_count / len(clean)) >= 0.25
+
     return False
 
 class _OnlineTask(QRunnable):
@@ -982,6 +987,7 @@ class AppController(QObject):
         elif key in ("dst_lang", "language_pair"):
             src = self.settings.get("src_lang", "en")
             dst = self.settings.get("dst_lang", "ru")
+            self.ocr.request_language(src)
             self.trans_win.toolbar.update_lang_badge(src, dst)
         elif key == "cpu_threads":
             # Если сейчас работает Qwen — перезапускаем сервер с новым количеством потоков
@@ -1019,6 +1025,7 @@ class AppController(QObject):
         self.model_manager.unload()
         clear_all_cache()
         self.settings_win._update_cache_display()
+        self.settings_win.clear_all_cache_requested.connect(self._on_clear_all_cache)
         self.settings_win.toast.show_toast("Кэш моделей полностью очищен")
 
     def _on_gpu_result(self, success, is_gpu, message):
@@ -1269,7 +1276,15 @@ class AppController(QObject):
             return
 
         # 1. Проверяем, существует ли окно и не свернуто ли оно
-        if not user32.IsWindow(self._pinned_hwnd) or user32.IsIconic(self._pinned_hwnd):
+        # 1. Проверяем, существует ли окно
+        if not user32.IsWindow(self._pinned_hwnd):
+            print("[tracker] Привязанное окно закрыто пользователем. Сброс привязки.")
+            self._pinned_hwnd = 0
+            self._pinned_exe = ""
+            self.settings_win._select_game_target(None)
+            return
+
+        if user32.IsIconic(self._pinned_hwnd):
             if self.inplace_canvas.isVisible():
                 self.inplace_canvas.hide()
             return
