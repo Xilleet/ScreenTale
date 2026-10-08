@@ -284,6 +284,8 @@ class AppController(QObject):
         self.settings_win.download_gguf_requested.connect(self._on_download_gguf)
         self.settings_win.install_runtime_requested.connect(self._on_install_runtime)
         self.settings_win.delete_gguf_requested.connect(self._on_delete_gguf)
+        self.settings_win.download_model_requested.connect(self._on_download_model)
+        self.settings_win.delete_model_requested.connect(self._on_delete_model)
 
         self.trans_win.toolbar.lang_pair_clicked.connect(self.settings.set_language_pair)
         self.trans_win.toolbar.open_settings_clicked.connect(self.show_settings)
@@ -1001,6 +1003,11 @@ class AppController(QObject):
                 self.inplace_canvas.hide()
                 if not self.trans_win.force_hidden:
                     self.trans_win.show()
+
+    def _on_download_model(self, engine_id: str):
+        print(f"[ctrl] Запрос на скачивание модели {engine_id}...")
+        use_gpu = bool(self.settings.get("gpu", False))
+        self.model_manager.load(engine_id, use_gpu=use_gpu)
 
     def _on_delete_model(self, engine_id):
         self.model_manager.unload()

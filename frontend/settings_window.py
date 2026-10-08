@@ -255,6 +255,8 @@ class _UpdateBanner(QFrame):
 
 
 class SettingsWindow(QWidget):
+    download_model_requested = Signal(str)  
+    delete_model_requested = Signal(str)  
     download_gguf_requested = Signal(dict)
     delete_gguf_requested = Signal(str)
     clear_all_cache_requested = Signal()
