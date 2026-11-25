@@ -32,6 +32,7 @@ DEFAULTS = {
     "theme": "dark",     
     "frame_opacity": 0.78,   # прозрачность подложки окна перевода (0.0..1.0)
     "text_opacity": 1.0,     # прозрачность самого текста (0.0..1.0)
+    "adaptive_opacity": False,  # авто-подстройка прозрачности подложки под фон (chat-режим)
     "src_lang": "en", # Исходный язык текста на экране
     "dst_lang": "ru", # Целевой язык перевода
     "recent_pairs": [["en", "ru"], ["ja", "ru"], ["zh", "ru"], ["ko", "ru"]],
@@ -156,6 +157,7 @@ class SettingsManager(QObject):
             data["frame_opacity"] = data["opacity"]
 
         for key in ("theme", "font_size", "frame_opacity", "text_opacity",
+                    "adaptive_opacity",
                     "gpu", "auto_copy", "auto_delay_ms", "verbose_log",
                     "ocr_engine", "ocr_direction", "welcome_completed",
                     "selected_gguf", "src_lang", "dst_lang", "recent_pairs",

@@ -903,6 +903,18 @@ class SettingsWindow(QWidget):
         th.addWidget(self.text_opacity_val)
         cv.addWidget(trow)
 
+        # Адаптивная прозрачность подложки (подстройка под фон вокруг окна).
+        # Ползунок frame_opacity выше при этом задаёт НИЖНЮЮ границу: адаптация
+        # только поднимает прозрачность от неё к потолку на светлом фоне.
+        self.adaptive_opacity_toggle = ToggleSwitch()
+        cv.addWidget(self._option_row(
+            t("ui.general.adaptive_opacity", "Адаптивная прозрачность фона"),
+            self.adaptive_opacity_toggle,
+            t("ui.general.adaptive_opacity_hint",
+              "Подложка темнеет на светлом фоне и прозрачнеет на тёмном — "
+              "текст всегда читаем. Ползунок выше задаёт нижнюю границу."),
+        ))
+
         v.addWidget(card)
 
         card2, c2 = self._card(t("ui.general.behavior_title", "Поведение"))
@@ -925,6 +937,7 @@ class SettingsWindow(QWidget):
         self.font_slider.valueChanged.connect(self._on_font_slider)
         self.frame_opacity_slider.valueChanged.connect(self._on_frame_opacity_slider)
         self.text_opacity_slider.valueChanged.connect(self._on_text_opacity_slider)
+        self.adaptive_opacity_toggle.toggled.connect(self._on_adaptive_opacity)
         self.autocopy_toggle.toggled.connect(self._on_autocopy)
         return page
 
@@ -962,6 +975,10 @@ class SettingsWindow(QWidget):
     def _on_text_opacity_slider(self, value):
         self.text_opacity_val.setText(f"{value} %")
         self.settings.set("text_opacity", value / 100.0)
+        self._saved_timer.start()
+
+    def _on_adaptive_opacity(self, checked):
+        self.settings.set("adaptive_opacity", bool(checked))
         self._saved_timer.start()
 
     def _on_autocopy(self, checked):
@@ -1972,6 +1989,7 @@ class SettingsWindow(QWidget):
         self._on_setting_changed("font_size", self.settings.get("font_size"))
         self._on_setting_changed("frame_opacity", self.settings.get("frame_opacity", 0.78))
         self._on_setting_changed("text_opacity", self.settings.get("text_opacity", 1.0))
+        self._on_setting_changed("adaptive_opacity", self.settings.get("adaptive_opacity", False))
         self._on_setting_changed("auto_copy", self.settings.get("auto_copy"))
         self._on_setting_changed("translator", self.settings.get("translator"))
         self._on_setting_changed("hotkeys", self.settings.get("hotkeys"))
@@ -2079,6 +2097,10 @@ class SettingsWindow(QWidget):
             self.text_opacity_slider.setValue(pct)
             self.text_opacity_val.setText(f"{pct} %")
             self.text_opacity_slider.blockSignals(False)
+        elif key == "adaptive_opacity":
+            self.adaptive_opacity_toggle.blockSignals(True)
+            self.adaptive_opacity_toggle.setChecked(bool(value))
+            self.adaptive_opacity_toggle.blockSignals(False)
         elif key == "streamer_mode":
             self.streamer_toggle.blockSignals(True)
             self.streamer_toggle.setChecked(bool(value))

@@ -4,6 +4,7 @@ import re
 import sys
 from ctypes import wintypes
 
+from PIL import ImageGrab
 from PySide6.QtCore import QPoint, QPropertyAnimation, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
@@ -40,6 +41,80 @@ HISTORY_TRIM_INTERVAL_MS = 150_000
 NOTICE_TOAST_MS = 2000
 STATUS_AUTO_RESET_OK_MS = 1500
 STATUS_AUTO_RESET_ERR_MS = 3000
+
+# Параметры адаптивной прозрачности подложки (chat-режим).
+# См. sample_surrounding_luminance / map_luminance_to_opacity ниже.
+ADAPT_SAMPLE_DEBOUNCE_MS = 150   # задержка замера после move/resize (дребезг)
+ADAPT_POLL_INTERVAL_MS = 2500    # периодический пересчёт для неподвижного окна
+ADAPT_SAMPLE_MARGIN = 14         # отступ точек замера НАРУЖУ от углов рамки (за тенью)
+ADAPT_OPACITY_CEILING = 0.92     # потолок прозрачности подложки на белом фоне
+
+
+def sample_surrounding_luminance(frame_rect: QRect,
+                                 margin: int = ADAPT_SAMPLE_MARGIN) -> float:
+    """Замер яркости фона ВОКРУГ окна перевода (адаптивная прозрачность, chat).
+
+    Аналог inplace-функции sample_background_color (которая меряет 4 угла
+    ВНУТРИ плашки, чтобы слиться с фоном — «Хамелеон»), но с обратной семантикой:
+    здесь 4 точки меряются СНАРУЖИ рамки — на `margin` px по диагонали от её
+    углов, за пределами тени (SHADOW_MARGIN = 10), чтобы оценить именно фон,
+    на котором лежит окно, а не само окно.
+
+    Возвращает яркость 0..255 (тёмный фон → 0, светлый → 255).
+    Возвращает -1.0, если замер не удался (не-win32, нет дисплея, точки
+    off-screen, ошибка ImageGrab) — вызывающий трактует это как «адаптации нет».
+    """
+    try:
+        x0 = frame_rect.left()
+        y0 = frame_rect.top()
+        x1 = frame_rect.right()
+        y1 = frame_rect.bottom()
+        # 4 точки по диагонали наружу от углов видимой рамки
+        pts = [
+            (x0 - margin, y0 - margin),
+            (x1 + margin, y0 - margin),
+            (x0 - margin, y1 + margin),
+            (x1 + margin, y1 + margin),
+        ]
+        gx0 = min(p[0] for p in pts) - 1
+        gy0 = min(p[1] for p in pts) - 1
+        gx1 = max(p[0] for p in pts) + 2
+        gy1 = max(p[1] for p in pts) + 2
+        if gx1 - gx0 < 4 or gy1 - gy0 < 4:
+            return -1.0
+        crop = ImageGrab.grab(bbox=(gx0, gy0, gx1, gy1), all_screens=True)
+        cw, ch = crop.size
+        lum_sum = 0.0
+        for px, py in pts:
+            # Точка может оказаться off-screen на краю монитора — климпим в кроп.
+            lx = max(0, min(cw - 1, px - gx0))
+            ly = max(0, min(ch - 1, py - gy0))
+            r, g, b = crop.getpixel((lx, ly))[:3]
+            # Воспринимаемая яркость (Rec.601), не наивное среднее
+            lum_sum += 0.299 * r + 0.587 * g + 0.114 * b
+        return lum_sum / 4.0
+    except Exception:
+        return -1.0
+
+
+def map_luminance_to_opacity(luminance: float, base: float,
+                             ceiling: float = ADAPT_OPACITY_CEILING) -> float:
+    """Линейное отображение яркости фона (0..255) в прозрачность подложки.
+
+    Контракт (запрос пользователя):
+      - светлый фон (luminance → 255) → подложка темнеет: opacity → ceiling
+      - тёмный фон   (luminance → 0)   → подложка прозрачнеет: opacity → base
+    `base` — нижняя граница (значение ползунка «Прозрачность фона»); адаптация
+    только ПОДНИМАЕТ прозрачность от base к ceiling, никогда не ниже base —
+    так ручная настройка пользователя всегда остаётся значимой.
+    luminance < 0 (замер не удался) → возвращаем base (адаптация отключена).
+    """
+    if luminance < 0:
+        return float(base)
+    b = max(0.0, min(1.0, float(base)))
+    c = max(b, min(1.0, float(ceiling)))
+    t = max(0.0, min(255.0, float(luminance))) / 255.0
+    return round(b + (c - b) * t, 3)
 
 
 # ============================================================
@@ -687,6 +762,25 @@ class TranslateWindow(QWidget):
         
         self._font_size = int(settings.get("font_size", 14))
 
+        # --- Адаптивная прозрачность подложки (chat-режим) ---
+        # Ползунок frame_opacity задаёт НИЖНЮЮ границу (base); при adaptive_opacity
+        # замеряем яркость фона вокруг окна и поднимаем прозрачность к ceiling на
+        # светлом фоне (текст светлый → нужна тёмная плашка), оставляем base на
+        # тёмном (текст и так читаем). См. sample_surrounding_luminance /
+        # map_luminance_to_opacity выше и запрос пользователя про замер «по углам».
+        self._frame_opacity_base = float(settings.get("frame_opacity", 0.78))
+        self._adaptive_on = bool(settings.get("adaptive_opacity", False))
+        self._adaptive_eff_alpha = None     # alpha, пересчитанная по замеру (или None)
+        self._last_luminance = None         # кэш яркости для мгновенного re-map
+        self._adapt_debounce = QTimer(self)
+        self._adapt_debounce.setSingleShot(True)
+        self._adapt_debounce.setInterval(ADAPT_SAMPLE_DEBOUNCE_MS)
+        self._adapt_debounce.timeout.connect(self._do_adapt_sample)
+        self._adapt_poll = QTimer(self)
+        self._adapt_poll.setSingleShot(False)
+        self._adapt_poll.setInterval(ADAPT_POLL_INTERVAL_MS)
+        self._adapt_poll.timeout.connect(self._request_adapt_sample)
+
         settings.changed.connect(self._on_setting_changed)
         self.update_font_size(int(settings.get("font_size", 14)))
         # Подложка и текст имеют независимую прозрачность (см. DEFAULTS в config.py).
@@ -746,12 +840,18 @@ class TranslateWindow(QWidget):
                 card = self.get_card_screen_rect().adjusted(-4, -4, 4, 4)
                 if tb_rect.intersects(card):
                     self.toolbar.on_drag_finished()
+        # Окно переместилось — фон под ним мог измениться, просим свежий замер
+        if getattr(self, "_adaptive_on", False):
+            self._request_adapt_sample()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._reposition_overlays()
         if hasattr(self, "toolbar"):
             self.toolbar.align_to_window()
+        # Размер рамки изменился — пере-замеряем охватываемый фон
+        if getattr(self, "_adaptive_on", False):
+            self._request_adapt_sample()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -759,6 +859,10 @@ class TranslateWindow(QWidget):
             self.toolbar.show()
             self.toolbar.align_to_window()
             self.toolbar.raise_()
+        if getattr(self, "_adaptive_on", False):
+            # Окно появилось — стартуем периодический опрос и делаем первый замер
+            self._adapt_poll.start()
+            self._request_adapt_sample()
 
     def _on_setting_changed(self, key, value):
         if key == "font_size":
@@ -767,6 +871,8 @@ class TranslateWindow(QWidget):
             self.update_frame_opacity(float(value))
         elif key == "text_opacity":
             self.update_text_opacity(float(value))
+        elif key == "adaptive_opacity":
+            self._set_adaptive_enabled(bool(value))
 
     # frontend/translate_window.py -> класс TranslateWindow
 
@@ -824,8 +930,71 @@ class TranslateWindow(QWidget):
         """
 
     def update_frame_opacity(self, value: float):
-        """Прозрачность подложки (0.0..1.0) — через QSS rgba()."""
-        self.border_frame.setStyleSheet(self._build_frame_qss(value))
+        """Прозрачность подложки (0.0..1.0) — через QSS rgba().
+
+        Значение трактуется как НИЖНЯЯ граница (base): при включённой адаптивной
+        прозрачности реальная alpha пересчитывается от base к ceiling по яркости
+        фона (см. _apply_effective_opacity). Ручная смена ползунка мгновенно
+        пере-отображает последний замер (без ожидания нового grab) и планирует
+        свежий замер, чтобы base всегда оставался значимым.
+        """
+        self._frame_opacity_base = max(0.0, min(1.0, float(value)))
+        if self._adaptive_on and self._last_luminance is not None:
+            self._adaptive_eff_alpha = map_luminance_to_opacity(
+                self._last_luminance, self._frame_opacity_base
+            )
+        self._apply_effective_opacity()
+        if self._adaptive_on and self.isVisible() and not self._is_paused:
+            self._request_adapt_sample()
+
+    # ---------- Адаптивная прозрачность подложки ----------
+    def _effective_opacity(self) -> float:
+        """Реальная alpha подложки с учётом адаптации (или base, если выключена)."""
+        if self._adaptive_on and self._adaptive_eff_alpha is not None:
+            return self._adaptive_eff_alpha
+        return self._frame_opacity_base
+
+    def _apply_effective_opacity(self):
+        """Перестраивает QSS подложки под актуальную (возможно адаптированную) alpha."""
+        self.border_frame.setStyleSheet(self._build_frame_qss(self._effective_opacity()))
+
+    def _set_adaptive_enabled(self, enabled: bool):
+        """Включает/выключает адаптивную прозрачность на лету."""
+        self._adaptive_on = bool(enabled)
+        if self._adaptive_on:
+            # Сбрасываем кэш — заставляем сделать свежий замер с текущего base
+            self._adaptive_eff_alpha = None
+            self._last_luminance = None
+            self._apply_effective_opacity()
+            if self.isVisible() and not self._is_paused:
+                self._adapt_poll.start()
+                self._request_adapt_sample()
+        else:
+            self._adapt_poll.stop()
+            self._adapt_debounce.stop()
+            self._adaptive_eff_alpha = None
+            self._last_luminance = None
+            self._apply_effective_opacity()
+
+    def _request_adapt_sample(self):
+        """Дебаунс-запрос замера яркости (дребезг move/resize)."""
+        if not self._adaptive_on or not self.isVisible() or self._is_paused:
+            return
+        self._adapt_debounce.start()
+
+    def _do_adapt_sample(self):
+        """Замеряет яркость фона вокруг окна и пере-применяет адаптированную alpha."""
+        if not self._adaptive_on or not self.isVisible() or self._is_paused:
+            return
+        lum = sample_surrounding_luminance(self.get_card_screen_rect())
+        if lum < 0:
+            # Замер не удался (не-win32 / точки off-screen) — оставляем base, не падаем.
+            self._adaptive_eff_alpha = None
+            self._apply_effective_opacity()
+            return
+        self._last_luminance = lum
+        self._adaptive_eff_alpha = map_luminance_to_opacity(lum, self._frame_opacity_base)
+        self._apply_effective_opacity()
 
     def update_text_opacity(self, value: float):
         """Прозрачность текста (0.0..1.0).
@@ -868,6 +1037,10 @@ class TranslateWindow(QWidget):
         self.force_hidden = True
         self.hide()
         self.toolbar.hide()
+        if hasattr(self, "_adapt_poll"):
+            # Окно скрыто — опрос фона не нужен, иначе зря дёргаем ImageGrab
+            self._adapt_poll.stop()
+            self._adapt_debounce.stop()
 
     def toggle_visible(self):
         if self.isVisible():
@@ -890,6 +1063,9 @@ class TranslateWindow(QWidget):
             self.hide()
             self.toolbar.show()
             self.toolbar.raise_()
+            if hasattr(self, "_adapt_poll"):
+                self._adapt_poll.stop()
+                self._adapt_debounce.stop()
         else:
             self.show()
             self.toolbar.show()
@@ -898,6 +1074,10 @@ class TranslateWindow(QWidget):
                 self.toolbar.align_to_window()
             else:
                 self.toolbar.on_drag_finished()
+            # showEvent сам перезапустит опрос, но дублируем для надёжности
+            if getattr(self, "_adaptive_on", False):
+                self._adapt_poll.start()
+                self._request_adapt_sample()
 
     def toggle_ghost_mode(self) -> bool:
         self._ghost_mode = not self._ghost_mode
