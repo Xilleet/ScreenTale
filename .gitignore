@@ -13,6 +13,10 @@ ruff.toml
 README.md.back
 roadmap.txt
 
+# Отчёты pytest (генерируется run_tests.py)
+test_report.txt
+.pytest_cache/
+
 # Логи и блокировки
 app.log
 *.log
