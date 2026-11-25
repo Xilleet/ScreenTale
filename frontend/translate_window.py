@@ -644,11 +644,19 @@ class TranslateWindow(QWidget):
         """)
         frame_layout.addWidget(self.text_widget)
 
-        # Прозрачность текста — отдельным эффектом (QGraphicsOpacityEffect).
-        # Не конфликтует с shadow, потому что shadow на border_frame, не на text_widget.
-        self._text_opacity_effect = QGraphicsOpacityEffect(self.text_widget)
-        self._text_opacity_effect.setOpacity(1.0)
-        self.text_widget.setGraphicsEffect(self._text_opacity_effect)
+        # Прозрачность текста хранится как float и применяется к цвету через
+        # QTextCharFormat.setForeground(QColor(r, g, b, alpha)).
+        #
+        # ВАЖНО: НЕ использовать QGraphicsOpacityEffect на QTextEdit — он рендерит
+        # виджет в прямоугольный offscreen-pixmap, который НЕ уважает скруглённые
+        # углы border_frame. Когда frame_opacity опускают ниже 1.0, этот
+        # прямоугольный pixmap становится виден — и текст кажется «выезжающим»
+        # за скруглённые углы. Регрессия: см. tests/test_opacity.py.
+        self._text_opacity = 1.0
+        # Кэш истории реплик для re-рендера при смене text_opacity «на лету».
+        # Каждый элемент: (timestamp_str, body_str). Без этого нельзя было бы
+        # обновить alpha у уже напечатанного текста при движении ползунка.
+        self._history: list[tuple[str, str]] = []
 
         self.grip = ResizeGrip(self)
         self._notice_toast = _NoticeToast(self)
@@ -820,12 +828,41 @@ class TranslateWindow(QWidget):
         self.border_frame.setStyleSheet(self._build_frame_qss(value))
 
     def update_text_opacity(self, value: float):
-        """Прозрачность самого текста (0.0..1.0) — через QGraphicsOpacityEffect.
+        """Прозрачность текста (0.0..1.0).
 
-        Окно целиком остаётся полностью непрозрачным (setWindowOpacity=1.0),
-        поэтому клики по тексту и скролл работают как обычно.
+        Применяется к цвету через QTextCharFormat.setForeground(QColor(r,g,b,alpha)),
+        НЕ через QGraphicsOpacityEffect — см. комментарий в __init__.
+
+        При смене «на лету» пере-рендерит всю историю чата, чтобы alpha
+        обновилась у уже напечатанных реплик, а не только у новых.
         """
-        self._text_opacity_effect.setOpacity(max(0.0, min(1.0, float(value))))
+        self._text_opacity = max(0.0, min(1.0, float(value)))
+        self._reapply_text_opacity()
+
+    def _text_color(self, hex_color: str) -> QColor:
+        """Возвращает QColor с применённой text_opacity как alpha-каналом."""
+        c = QColor(hex_color)
+        c.setAlpha(max(0, min(255, int(255 * self._text_opacity))))
+        return c
+
+    def _reapply_text_opacity(self):
+        """Пере-рендерит всю историю чата с текущей text_opacity.
+
+        Вызывается при движении ползунка прозрачности текста. Без этого
+        старые реплики сохраняли бы alpha, с которым были напечатаны.
+        """
+        if not hasattr(self, "_history") or not self._history:
+            return
+        # Сохраняем текущую позицию скролла, чтобы после re-рендера не улететь наверх
+        scroll_bar = self.text_widget.verticalScrollBar()
+        saved_scroll = scroll_bar.value() if scroll_bar else 0
+
+        self.text_widget.clear()
+        for time_str, body_str in self._history:
+            self._render_entry(time_str, body_str)
+
+        if scroll_bar:
+            scroll_bar.setValue(saved_scroll)
 
     def hide_manual(self):
         self.force_hidden = True
@@ -939,42 +976,22 @@ class TranslateWindow(QWidget):
             if not self.isVisible() and not self.force_hidden and not self._is_paused:
                 self.show()
             return
-        cursor = QTextCursor(self.text_widget.document())
-        cursor.movePosition(QTextCursor.MoveOperation.End)
 
-        # 1. Отступ между репликами (воздух)
-        if self.text_widget.toPlainText().strip():
-            cursor.insertText("\n\n")
-
-        if not hasattr(self, "_current_font"):
-            self._current_font = QFont("Segoe UI", getattr(self, "_font_size", 14))
-
-        # 2. Выделяем таймштамп янтарным акцентом, а саму реплику — цветом пергамента
+        # Разбираем (timestamp, body) один раз — это пригодится и для рендера,
+        # и для кэша _history, по которому _reapply_text_opacity пере-рисует
+        # всю историю при движении ползунка прозрачности текста.
         match = re.match(r"^(\(\d{2}:\d{2}:\d{2}\))\s*(.*)$", text, re.DOTALL)
         if match:
             time_str, body_str = match.group(1), match.group(2)
-
-            fmt_time = QTextCharFormat()
-            fmt_time.setFont(self._current_font)            
-            fmt_time.setForeground(QColor("#e08e45"))
-            cursor.setCharFormat(fmt_time)                  
-            cursor.insertText(time_str + " ")
-
-            # Формат реплики
-            fmt_body = QTextCharFormat()
-            fmt_body.setFont(self._current_font)            
-            fmt_body.setForeground(QColor("#f2ede4"))
-            cursor.setCharFormat(fmt_body)                  
-            cursor.insertText(body_str)
         else:
-            fmt = QTextCharFormat()
-            fmt.setFont(self._current_font)                
-            fmt.setForeground(QColor("#f2ede4"))
-            cursor.setCharFormat(fmt)                      
-            cursor.insertText(text)
+            time_str, body_str = "", text
 
-        self.text_widget.setTextCursor(cursor)
-        self.text_widget.ensureCursorVisible()
+        # Кэш для re-рендера при смене text_opacity «на лету».
+        self._history.append((time_str, body_str))
+        if len(self._history) > MAX_HISTORY_LINES:
+            self._history = self._history[-MAX_HISTORY_LINES:]
+
+        self._render_entry(time_str, body_str)
 
         if x is not None and y is not None:
             raw_pos = QPoint(x + 20 - SHADOW_MARGIN, y + 20 - SHADOW_MARGIN)
@@ -983,8 +1000,42 @@ class TranslateWindow(QWidget):
         if not self.isVisible() and not self.force_hidden and not self._is_paused:
             self.show()
 
+    def _render_entry(self, time_str: str, body_str: str):
+        """Рендерит одну реплику в конец документа с текущей text_opacity.
+
+        Вынесено из show_translation, чтобы _reapply_text_opacity мог
+        пере-рисовать всю историю единообразно.
+        """
+        cursor = QTextCursor(self.text_widget.document())
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+
+        # Отступ между репликами (воздух)
+        if self.text_widget.toPlainText().strip():
+            cursor.insertText("\n\n")
+
+        if not hasattr(self, "_current_font"):
+            self._current_font = QFont("Segoe UI", getattr(self, "_font_size", 14))
+
+        if time_str:
+            fmt_time = QTextCharFormat()
+            fmt_time.setFont(self._current_font)
+            fmt_time.setForeground(self._text_color("#e08e45"))
+            cursor.setCharFormat(fmt_time)
+            cursor.insertText(time_str + " ")
+
+        fmt_body = QTextCharFormat()
+        fmt_body.setFont(self._current_font)
+        fmt_body.setForeground(self._text_color("#f2ede4"))
+        cursor.setCharFormat(fmt_body)
+        cursor.insertText(body_str)
+
+        self.text_widget.setTextCursor(cursor)
+        self.text_widget.ensureCursorVisible()
+
     def clear_history(self):
         self.text_widget.clear()
+        if hasattr(self, "_history"):
+            self._history.clear()
 
     def _cleanup_history(self):
         try:
@@ -999,6 +1050,9 @@ class TranslateWindow(QWidget):
                     cursor.removeSelectedText()
                     cursor.deleteChar()
                 cursor.endEditBlock()
+            # Держим _history синхронным с обрезаемым документом
+            if hasattr(self, "_history") and len(self._history) > MAX_HISTORY_LINES:
+                self._history = self._history[-MAX_HISTORY_LINES:]
         except Exception as _e:
             print(f"[warn] _cleanup_history: {_e}")
 
