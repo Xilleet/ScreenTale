@@ -860,12 +860,16 @@ class AppController(QObject):
                         self.trans_win.hide()
                         from frontend.inplace_canvas import cluster_lines
                         clusters = cluster_lines(blocks)
+                        # Прозрачность текста в In-Place — отдельная от подложки настройка.
+                        text_op = float(self.settings.get("text_opacity", 1.0))
                         if len(clusters) > 1:
                             translations = parse_structured_translation(translation, len(clusters))
-                            self.inplace_canvas.display_structured_translation(clusters, translations)
+                            self.inplace_canvas.display_structured_translation(
+                                clusters, translations, text_opacity=text_op)
                         else:
                             clean_trans = re.sub(r"^\[1\]\s*", "", translation).strip()
-                            self.inplace_canvas.display_structured_translation(clusters, [clean_trans])
+                            self.inplace_canvas.display_structured_translation(
+                                clusters, [clean_trans], text_opacity=text_op)
                 else:
                     self.inplace_canvas.clear()
                     self.inplace_canvas.hide()

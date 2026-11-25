@@ -865,30 +865,43 @@ class SettingsWindow(QWidget):
         pv.addWidget(self.preview_label)
         cv.addWidget(self.preview_frame)
 
-        self.outline_toggle = ToggleSwitch()
-        cv.addWidget(self._option_row(
-            t("ui.general.outline", "Контрастная обводка текста"),
-            self.outline_toggle,
-            t("ui.general.outline_hint", "Тонкий темный контур букв...")
-        ))
+        # Прозрачность подложки окна перевода (фоновой плашки)
+        frow = QWidget()
+        frow.setObjectName("Row")
+        fh = QHBoxLayout(frow)
+        fh.setContentsMargins(0, 0, 0, 0)
+        fh.setSpacing(10)
+        fh.addWidget(QLabel(t("ui.general.frame_opacity", "Прозрачность фона")))
+        fh.addStretch(1)
+        self.frame_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.frame_opacity_slider.setRange(0, 100)
+        self.frame_opacity_slider.setMinimumWidth(200)
+        self.frame_opacity_val = QLabel("78 %")
+        self.frame_opacity_val.setObjectName("Hint")
+        self.frame_opacity_val.setFixedWidth(38)
+        self.frame_opacity_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        fh.addWidget(self.frame_opacity_slider)
+        fh.addWidget(self.frame_opacity_val)
+        cv.addWidget(frow)
 
-        orow = QWidget()
-        orow.setObjectName("Row")
-        oh = QHBoxLayout(orow)
-        oh.setContentsMargins(0, 0, 0, 0)
-        oh.setSpacing(10)
-        oh.addWidget(QLabel(t("ui.general.opacity", "Прозрачность окна перевода")))
-        oh.addStretch(1)
-        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
-        self.opacity_slider.setRange(40, 100)
-        self.opacity_slider.setMinimumWidth(200)
-        self.opacity_val = QLabel("95 %")
-        self.opacity_val.setObjectName("Hint")
-        self.opacity_val.setFixedWidth(38)
-        self.opacity_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        oh.addWidget(self.opacity_slider)
-        oh.addWidget(self.opacity_val)
-        cv.addWidget(orow)
+        # Прозрачность самого текста (независимо от подложки)
+        trow = QWidget()
+        trow.setObjectName("Row")
+        th = QHBoxLayout(trow)
+        th.setContentsMargins(0, 0, 0, 0)
+        th.setSpacing(10)
+        th.addWidget(QLabel(t("ui.general.text_opacity", "Прозрачность текста")))
+        th.addStretch(1)
+        self.text_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.text_opacity_slider.setRange(20, 100)
+        self.text_opacity_slider.setMinimumWidth(200)
+        self.text_opacity_val = QLabel("100 %")
+        self.text_opacity_val.setObjectName("Hint")
+        self.text_opacity_val.setFixedWidth(38)
+        self.text_opacity_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        th.addWidget(self.text_opacity_slider)
+        th.addWidget(self.text_opacity_val)
+        cv.addWidget(trow)
 
         v.addWidget(card)
 
@@ -910,9 +923,9 @@ class SettingsWindow(QWidget):
         v.addStretch(1)
 
         self.font_slider.valueChanged.connect(self._on_font_slider)
-        self.opacity_slider.valueChanged.connect(self._on_opacity_slider)
+        self.frame_opacity_slider.valueChanged.connect(self._on_frame_opacity_slider)
+        self.text_opacity_slider.valueChanged.connect(self._on_text_opacity_slider)
         self.autocopy_toggle.toggled.connect(self._on_autocopy)
-        self.outline_toggle.toggled.connect(self._on_outline_toggled)
         return page
 
     def _on_theme_changed(self, ident):
@@ -941,9 +954,14 @@ class SettingsWindow(QWidget):
         self.preview_label.setStyleSheet(
             f"font-size: {int(size)}px; color: {PALETTE['text']};")
 
-    def _on_opacity_slider(self, value):
-        self.opacity_val.setText(f"{value} %")
-        self.settings.set("opacity", value / 100.0)
+    def _on_frame_opacity_slider(self, value):
+        self.frame_opacity_val.setText(f"{value} %")
+        self.settings.set("frame_opacity", value / 100.0)
+        self._saved_timer.start()
+
+    def _on_text_opacity_slider(self, value):
+        self.text_opacity_val.setText(f"{value} %")
+        self.settings.set("text_opacity", value / 100.0)
         self._saved_timer.start()
 
     def _on_autocopy(self, checked):
@@ -1948,28 +1966,12 @@ class SettingsWindow(QWidget):
             f"PySide6: {pyside_ver}\nQt: {qVersion()}")
         self.toast.show_toast("Скопировано в буфер обмена")
 
-    def _on_outline_toggled(self, checked):
-        self.settings.set("text_outline", bool(checked))
-        self._update_preview_outline(bool(checked))
-        self._saved_timer.start()
-
-    def _update_preview_outline(self, enabled: bool):
-        """Интерактивно обновляет контур в блоке Preview настроек."""
-        from PySide6.QtWidgets import QGraphicsDropShadowEffect
-        if enabled:
-            shadow = QGraphicsDropShadowEffect(self.preview_label)
-            shadow.setBlurRadius(3)
-            shadow.setColor(QColor(0, 0, 0, 240))
-            shadow.setOffset(0, 0)
-            self.preview_label.setGraphicsEffect(shadow)
-        else:
-            self.preview_label.setGraphicsEffect(None)
-
 # ---------------- реакция на settings.changed ----------------
     def _sync_from_settings(self):
         self.theme_seg.set_value(self.settings.get("theme", "dark"))
         self._on_setting_changed("font_size", self.settings.get("font_size"))
-        self._on_setting_changed("opacity", self.settings.get("opacity"))
+        self._on_setting_changed("frame_opacity", self.settings.get("frame_opacity", 0.78))
+        self._on_setting_changed("text_opacity", self.settings.get("text_opacity", 1.0))
         self._on_setting_changed("auto_copy", self.settings.get("auto_copy"))
         self._on_setting_changed("translator", self.settings.get("translator"))
         self._on_setting_changed("hotkeys", self.settings.get("hotkeys"))
@@ -1996,7 +1998,6 @@ class SettingsWindow(QWidget):
         self._on_setting_changed("cpu_threads", self.settings.get("cpu_threads", 0))
         self._update_lang_lock_state()
         self._update_ocr_lang_warning()
-        self._on_setting_changed("text_outline", self.settings.get("text_outline", False))
         self.mode_seg.set_value(self.settings.get("overlay_mode", "chat"))
         self._update_ui_lang_button_text()
 
@@ -2007,12 +2008,6 @@ class SettingsWindow(QWidget):
             self.font_val.setText(str(value))
             self.font_slider.blockSignals(False)
             self._update_preview_font(int(value))
-        elif key == "opacity":
-            pct = round(value * 100)
-            self.opacity_slider.blockSignals(True)
-            self.opacity_slider.setValue(pct)
-            self.opacity_val.setText(f"{pct} %")
-            self.opacity_slider.blockSignals(False)
         elif key == "auto_copy":
             self.autocopy_toggle.blockSignals(True)
             self.autocopy_toggle.setChecked(bool(value))
@@ -2072,11 +2067,18 @@ class SettingsWindow(QWidget):
             else:
                 self.threads_val.setText(f"{val} яд.")
             self.threads_slider.blockSignals(False)
-        elif key == "text_outline":
-            self.outline_toggle.blockSignals(True)
-            self.outline_toggle.setChecked(bool(value))
-            self.outline_toggle.blockSignals(False)
-            self._update_preview_outline(bool(value))
+        elif key == "frame_opacity":
+            pct = round(float(value) * 100)
+            self.frame_opacity_slider.blockSignals(True)
+            self.frame_opacity_slider.setValue(pct)
+            self.frame_opacity_val.setText(f"{pct} %")
+            self.frame_opacity_slider.blockSignals(False)
+        elif key == "text_opacity":
+            pct = round(float(value) * 100)
+            self.text_opacity_slider.blockSignals(True)
+            self.text_opacity_slider.setValue(pct)
+            self.text_opacity_val.setText(f"{pct} %")
+            self.text_opacity_slider.blockSignals(False)
         elif key == "streamer_mode":
             self.streamer_toggle.blockSignals(True)
             self.streamer_toggle.setChecked(bool(value))

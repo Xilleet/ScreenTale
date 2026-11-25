@@ -26,6 +26,7 @@ class InPlaceBlock:
     bg_color: QColor
     font_size: int
     angle: float = 0.0
+    text_opacity: float = 1.0   # 0.0..1.0, применяется к цвету текста в paintEvent
 
 def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 1.15) -> list[dict]:
     """Усовершенствованная кластеризация для сложных интерфейсов и бабблов.
@@ -229,11 +230,17 @@ class InPlaceCanvas(QWidget):
 
         self._was_m_down = is_m_down
 
-    def display_structured_translation(self, clusters: list[dict], translated_texts: list[str]):
-        """Отрисовывает каждый независимый кластер на экране СВОЁЙ собственной плашкой!"""
+    def display_structured_translation(self, clusters: list[dict], translated_texts: list[str],
+                                        text_opacity: float = 1.0):
+        """Отрисовывает каждый независимый кластер на экране СВОЁЙ собственной плашкой!
+
+        text_opacity (0.0..1.0) применяется только к цвету текста, не к подложке —
+        позволяет опускать фон, сохраняя читаемость перевода.
+        """
         if not clusters or not translated_texts:
             return
 
+        text_alpha = max(0.0, min(1.0, float(text_opacity)))
         new_blocks = []
 
         for i, c in enumerate(clusters):
@@ -281,6 +288,7 @@ class InPlaceCanvas(QWidget):
                     bg_color=bg_color,
                     font_size=font_size,
                     angle=angle,
+                    text_opacity=text_alpha,
                 )
             )
 
@@ -390,7 +398,9 @@ class InPlaceCanvas(QWidget):
             p.drawRoundedRect(local_rect, 6, 6)
 
             # 6. Рисуем текст перевода (он автоматически повернётся вместе с холстом!)
-            p.setPen(QColor(245, 240, 235))
+            # text_opacity применяется только к цвету текста — не к подложке.
+            text_alpha_byte = max(0, min(255, int(255 * getattr(b, "text_opacity", 1.0))))
+            p.setPen(QColor(245, 240, 235, text_alpha_byte))
             p.setFont(QFont("Segoe UI", b.font_size, QFont.Weight.Bold))
             p.drawText(
                 local_rect.adjusted(8, 6, -8, -6),

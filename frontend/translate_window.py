@@ -618,13 +618,11 @@ class TranslateWindow(QWidget):
         self.border_frame = QFrame()
         self.border_frame.setObjectName("GlassFrame")
         self.border_frame.setMinimumSize(0, 0)
-        self.border_frame.setStyleSheet("""
-            QFrame#GlassFrame {
-                background-color: rgba(22, 22, 26, 0.78);
-                border: 1px solid rgba(255, 255, 255, 0.14);
-                border-radius: 14px;
-            }
-        """)
+        # Цвет подложки задаётся динамически в update_frame_opacity через rgba()
+        # (QSS нельзя комбинировать с QGraphicsEffect — shadow упадёт).
+        self._frame_bg = (22, 22, 26)   # базовый RGB подложки
+        self._frame_border = (255, 255, 255, 36)  # 0.14 * 255 ≈ 36
+        self.border_frame.setStyleSheet(self._build_frame_qss(0.78))
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(24)
         shadow.setColor(QColor(0, 0, 0, 160))
@@ -645,6 +643,12 @@ class TranslateWindow(QWidget):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
         """)
         frame_layout.addWidget(self.text_widget)
+
+        # Прозрачность текста — отдельным эффектом (QGraphicsOpacityEffect).
+        # Не конфликтует с shadow, потому что shadow на border_frame, не на text_widget.
+        self._text_opacity_effect = QGraphicsOpacityEffect(self.text_widget)
+        self._text_opacity_effect.setOpacity(1.0)
+        self.text_widget.setGraphicsEffect(self._text_opacity_effect)
 
         self.grip = ResizeGrip(self)
         self._notice_toast = _NoticeToast(self)
@@ -674,15 +678,15 @@ class TranslateWindow(QWidget):
 
         
         self._font_size = int(settings.get("font_size", 14))
-        self._text_outline = bool(settings.get("text_outline", False))
 
         settings.changed.connect(self._on_setting_changed)
         self.update_font_size(int(settings.get("font_size", 14)))
-        self.update_opacity(float(settings.get("opacity", 0.95)))
+        # Подложка и текст имеют независимую прозрачность (см. DEFAULTS в config.py).
+        self.update_frame_opacity(float(settings.get("frame_opacity", 0.78)))
+        self.update_text_opacity(float(settings.get("text_opacity", 1.0)))
 
         self.resize(420, 120)
         self._reposition_overlays()
-        self._apply_text_shadow(bool(settings.get("text_outline", False)))
 
     def get_card_screen_rect(self) -> QRect:
         # ДОБАВЛЕНО: Защита от нулевых координат при скрытом окне
@@ -751,12 +755,10 @@ class TranslateWindow(QWidget):
     def _on_setting_changed(self, key, value):
         if key == "font_size":
             self.update_font_size(int(value))
-        elif key == "text_outline":
-            self._text_outline = bool(value)
-            self.update_font_size(self._font_size)
-            self._apply_text_shadow(bool(value))
-        elif key == "opacity":
-            self.update_opacity(float(value))
+        elif key == "frame_opacity":
+            self.update_frame_opacity(float(value))
+        elif key == "text_opacity":
+            self.update_text_opacity(float(value))
 
     # frontend/translate_window.py -> класс TranslateWindow
 
@@ -794,8 +796,36 @@ class TranslateWindow(QWidget):
             
         cursor.mergeCharFormat(fmt)
 
-    def update_opacity(self, value):
-        self.setWindowOpacity(float(value))
+    def _build_frame_qss(self, alpha: float) -> str:
+        """Собирает QSS подложки с заданной прозрачностью rgba().
+
+        Qt не позволяет одновременно QGraphicsOpacityEffect и QGraphicsDropShadowEffect
+        на одном виджете — setGraphicsEffect затирает предыдущий. Поэтому подложка
+        управляется через rgba() в QSS, а текст — отдельным QGraphicsOpacityEffect
+        на text_widget.
+        """
+        a = max(0.0, min(1.0, float(alpha)))
+        r, g, b = self._frame_bg
+        br, bg, bb, _ = self._frame_border
+        return f"""
+            QFrame#GlassFrame {{
+                background-color: rgba({r}, {g}, {b}, {int(a * 255)});
+                border: 1px solid rgba({br}, {bg}, {bb}, {int(a * 36)});
+                border-radius: 14px;
+            }}
+        """
+
+    def update_frame_opacity(self, value: float):
+        """Прозрачность подложки (0.0..1.0) — через QSS rgba()."""
+        self.border_frame.setStyleSheet(self._build_frame_qss(value))
+
+    def update_text_opacity(self, value: float):
+        """Прозрачность самого текста (0.0..1.0) — через QGraphicsOpacityEffect.
+
+        Окно целиком остаётся полностью непрозрачным (setWindowOpacity=1.0),
+        поэтому клики по тексту и скролл работают как обычно.
+        """
+        self._text_opacity_effect.setOpacity(max(0.0, min(1.0, float(value))))
 
     def hide_manual(self):
         self.force_hidden = True
@@ -952,17 +982,6 @@ class TranslateWindow(QWidget):
 
         if not self.isVisible() and not self.force_hidden and not self._is_paused:
             self.show()
-
-    def _apply_text_shadow(self, enabled: bool):
-        """Накладывает внешнюю контрастную тень на весь текст (без искажения шрифта)."""
-        if enabled:
-            shadow = QGraphicsDropShadowEffect(self.text_widget)
-            shadow.setBlurRadius(2)  # Легкое размытие для мягкости
-            shadow.setOffset(1.2, 1.2) # Сдвиг вправо-вниз
-            shadow.setColor(QColor(0, 0, 0, 240)) # Глубокий черный
-            self.text_widget.setGraphicsEffect(shadow)
-        else:
-            self.text_widget.setGraphicsEffect(None)
 
     def clear_history(self):
         self.text_widget.clear()
