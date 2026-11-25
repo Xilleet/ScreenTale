@@ -2227,7 +2227,10 @@ class SettingsWindow(QWidget):
             self.toast.show_toast(t("toast.pin_reset", "Привязка сброшена (режим всего экрана)"))
 
     def _handle_exit(self):
-        self.settings.save()
+        # force_save() — синхронная запись на диск. save() взводит debounced-
+        # таймер 500 мс, но приложение закрывается сразу — настройки теряются.
+        # Регрессия: см. tests/test_config.py::test_handle_exit_persists_synchronously.
+        self.settings.force_save()
         if self.on_exit:
             self.on_exit()
         else:

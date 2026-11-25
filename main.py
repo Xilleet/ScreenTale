@@ -291,6 +291,9 @@ class AppController(QObject):
         self.settings_win.delete_gguf_requested.connect(self._on_delete_gguf)
         self.settings_win.download_model_requested.connect(self._on_download_model)
         self.settings_win.delete_model_requested.connect(self._on_delete_model)
+        # v0.8.1: сигнал «Очистить весь кэш» был не подключён — кнопка в
+        # Настройках молчала. Регрессия: см. tests/test_app_controller.py.
+        self.settings_win.clear_all_cache_requested.connect(self._on_clear_all_cache)
 
         self.trans_win.toolbar.lang_pair_clicked.connect(self.settings.set_language_pair)
         self.trans_win.toolbar.open_settings_clicked.connect(self.show_settings)
@@ -309,8 +312,12 @@ class AppController(QObject):
         self.trans_win.toolbar.pin_clicked.connect(self._pin_to_current_active_window)
         self.settings.changed.connect(self._on_setting_changed)
 
-        # сигнал от холста
-        self.inplace_canvas = InPlaceCanvas()
+        # Подключаем точечный клик СКМ на уже существующем inplace_canvas,
+        # созданном выше (строка ~175). Двойное создание было регрессией v0.7:
+        # первый canvas получал set_capture_visibility(not streamer_mode), но
+        # тут же перетирался вторым canvas'ом с дефолтной WDA_EXCLUDEFROMCAPTURE —
+        # Stream Mode работал задом наперёд (НЕ-стримеры были скрыты от OBS).
+        # Регрессия: см. tests/test_app_controller.py::test_inplace_canvas_created_once.
         self.inplace_canvas.point_translate_requested.connect(self._on_point_lookup_requested)
 
     def _toggle_pause_auto(self):
@@ -1031,7 +1038,6 @@ class AppController(QObject):
         self.model_manager.unload()
         clear_all_cache()
         self.settings_win._update_cache_display()
-        self.settings_win.clear_all_cache_requested.connect(self._on_clear_all_cache)
         self.settings_win.toast.show_toast("Кэш моделей полностью очищен")
 
     def _on_gpu_result(self, success, is_gpu, message):

@@ -151,3 +151,62 @@ def test_settings_first_run_flag(temp_data_dir):
 
     sm2 = SettingsManager()
     assert sm2.is_first_run is False
+
+
+def test_settings_save_does_not_persist_immediately(temp_data_dir):
+    """save() взводит debounced-таймер 500 мс, на диск НЕ пишет сразу.
+
+    Это документированное поведение. Если когда-нибудь
+    поменяем на синхронную запись — этот тест провалится, и нужно проверить,
+    что подписчики SettingsManager.changed это переварят (частые записи на
+    диск при движении ползунков opacity).
+    """
+    sm = SettingsManager()
+    sm.set("frame_opacity", 0.42)
+    sm.save()
+    # Файл НЕ существует — save() только взвёл таймер
+    assert not (temp_data_dir / "config.json").exists(), \
+        "save() должна быть debounced — немедленной записи на диск быть не должно"
+
+
+def test_settings_force_save_persists_immediately(temp_data_dir):
+    """force_save() — синхронная запись. Применяется в _handle_exit
+    SettingsWindow (см. AUDIT.md #5), иначе настройки теряются при выходе.
+    """
+    sm = SettingsManager()
+    sm.set("frame_opacity", 0.42)
+    sm.force_save()
+    # Файл существует немедленно
+    assert (temp_data_dir / "config.json").exists()
+
+
+def test_handle_exit_persists_synchronously(temp_data_dir, qapp):
+    """SettingsWindow._handle_exit вызывает force_save(), а не save().
+
+    Регрессия: в v0.7 был save() (debounced), приложение закрывалось через
+    «Выйти из программы» в сайдбаре — настройки (изменённые в последние
+    500 мс) терялись. После перехода на force_save() — пишутся синхронно.
+    """
+    from backend.config import SettingsManager
+    from backend.hotkeys import HotkeyManager
+    from frontend.settings_window import SettingsWindow
+
+    sm = SettingsManager()
+    sm.set("frame_opacity", 0.42)   # только что изменили
+    # Имитируем SettingsManager.changed без полной перезаписи
+
+    hotkeys = HotkeyManager()
+    win = SettingsWindow(sm, hotkeys, on_exit=lambda: None, hide_on_close=True)
+    qapp.processEvents()
+
+    # Должен был записать сразу (debounced-таймер НЕ успел сработать)
+    win._handle_exit()
+    qapp.processEvents()
+
+    # Файл должен существовать и содержать 0.42
+    cfg_path = temp_data_dir / "config.json"
+    assert cfg_path.exists(), "_handle_exit должен был сделать force_save()"
+    with open(cfg_path, encoding="utf-8") as f:
+        data = __import__("json").load(f)
+    assert abs(data["frame_opacity"] - 0.42) < 0.001, \
+        "настройки должны сохраниться синхронно при выходе"
