@@ -58,23 +58,28 @@ def normalize_ocr_text(text: str) -> str:
     - Исправление типовой ошибки OCR O->0 в числах.
     """
     def _merge_line_breaks(match):
-        # Если вокруг переноса иероглифы (диапазон CJK: \u4e00-\u9fff, кана: \u3040-\u30ff)
-        cjk_pattern = r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]"
+        # Если вокруг переноса CJK-иероглифы (диапазон \u4e00-\u9fff) или кана
+        # (\u3040-\u30ff) — склеиваем без пробела (японский/китайский не
+        # используют пробелы внутри слов). Hangul (корейский, \uac00-\ud7af)
+        # в pattern НЕ включаем — корейскому пробел между словами нужен.
+        cjk_pattern = r"[\u4e00-\u9fff\u3040-\u30ff]"
         before = match.string[match.start() - 1] if match.start() > 0 else ""
         after = match.string[match.end()] if match.end() < len(match.string) else ""
         if re.match(cjk_pattern, before) and re.match(cjk_pattern, after):
             return ""
         return " "
-    
+
     if not text or not text.strip():
         return ""
 
     # 1. Склейка слов, разорванных переносом строки: "trans-\nlation" -> "translation"
     text = re.sub(r"(\w+)-\s*\n\s*(\w+)", r"\1\2", text)
 
-    # 2. Одиночные \r\n или \n заменяем на пробел, сохраняя двойные \n\n (абзацы)
+    # 2. Одиночные \r\n или \n заменяем на пробел, сохраняя двойные \n\n (абзацы).
+    #    Используем _merge_line_breaks, чтобы CJK-иероглифы склеивались без
+    #    пробела (記\n憶 → 記憶, не «記 憶»). Регрессия: см. tests/test_ocr.py.
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    text = re.sub(r"(?<!\n)\n(?!\n)", _merge_line_breaks, text)
 
     # 3. Нормализация кавычек и апострофов к стандарту
     quote_map = {

@@ -104,14 +104,61 @@ def test_normalize_strips_leading_trailing():
 def test_normalize_preserves_cjk_no_space():
     """Между CJK-иероглифами одиночный \\n НЕ должен становиться пробелом.
 
-    Регрессия: было `\n` → ` ` для всех одиночных переносов, что ломало
-    японский текст, где `\n` означает конец столбца, а не пробел.
-    См. _merge_line_breaks в ocr.py.
+    Регрессия: в v0.7 строка `re.sub(r"(?<!\\n)\\n(?!\\n)", " ", text)`
+    заменяла все одиночные \\n на пробел, в т.ч. между иероглифами.
+    Функция _merge_line_breaks была написана, чтобы склеивать без пробела
+    (記\\n憶 → 記憶, не «記 憶»), но НЕ была подключена к re.sub. Этот
+    тест ловит именно такое подключение — см. backend/ocr.py:82.
     """
-    # 記 (U+8A18) и 憶 (U+61B6) — CJK
+    # 記 (U+8A18) и 憶 (U+61B6) — CJK-иероглифы
     text = "記\n憶"
     result = normalize_ocr_text(text)
     # Между CJK символами \\n должен стать пустой строкой (склейка), не пробелом
-    assert "記 憶" not in result, "между CJK не должно быть пробела от \\n"
-    assert "記憶" in result or "記\n憶" in result, \
-           f"ожидалась склейка без пробела, получено: {result!r}"
+    assert "記 憶" not in result, \
+        f"между CJK не должно быть пробела от \\n, получено: {result!r}"
+    assert "記憶" in result, f"ожидалась склейка без пробела, получено: {result!r}"
+
+
+def test_normalize_preserves_kana_no_space():
+    """Между символами каны (японская слоговая азбука) \\n → склейка без пробела.
+
+    Кана попадает в CJK-pattern (\\u3040-\\u30ff) — склеиваем как CJK.
+    Это правильно, т.к. японский не использует пробелы внутри слов.
+    """
+    # あ (U+3042) и い (U+3044) — hiragana
+    text = "あ\nい"
+    result = normalize_ocr_text(text)
+    assert "あ い" not in result, f"между kana не должно быть пробела: {result!r}"
+    assert "あい" in result
+
+
+def test_normalize_korean_newline_to_space():
+    """Между корейскими Hangul \\n → пробел (корейский использует пробелы).
+
+    Регрессия: раньше Hangul был включён в CJK-pattern, что ломало
+    корейский — `안녕\n안녕` становилось `안녕안녕` (без пробела), а должно
+    быть `안녕 안녕`. После сужения CJK-pattern до \\u4e00-\\u9fff +
+    \\u3040-\\u30ff (без \\uac00-\\ud7af) — корейский работает правильно.
+    """
+    # 안 (U+C548) и 녕 (U+B155) — Hangul
+    text = "안녕\n안녕"
+    result = normalize_ocr_text(text)
+    assert " " in result, f"между Hangul должен быть пробел, получено: {result!r}"
+
+
+def test_normalize_cjk_with_ascii_neighbors():
+    """CJK-иероглиф, окружённый ASCII (например, «1. 記\\n憶») —
+    склейка внутри CJK работает, пробелы вокруг сохраняются.
+    """
+    text = "1. 記\n憶 2."
+    result = normalize_ocr_text(text)
+    assert "記憶" in result, f"ожидаем склейку CJK, получено: {result!r}"
+
+
+def test_normalize_double_newline_preserved():
+    """Двойной \\n\\n (абзац) сохраняется, не становится двойным пробелом."""
+    text = "First paragraph\n\nSecond paragraph"
+    result = normalize_ocr_text(text)
+    # Одинокий \\n заменяется на пробел, но \\n\\n должен сохраниться
+    assert "\n\n" in result or "  " in result, \
+        f"двойной \\n\\n должен сохраниться, получено: {result!r}"
