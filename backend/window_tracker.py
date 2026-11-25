@@ -20,6 +20,7 @@ DWMWA_EXTENDED_FRAME_BOUNDS = 9
 
 # Чёрный список системных утилит, фоновых хостов и консолей
 SYSTEM_EXCLUDES = {
+    # Проводник и системные оболочки Windows 10/11
     "explorer.exe",
     "shellexperiencehost.exe",
     "textinputhost.exe",
@@ -29,17 +30,37 @@ SYSTEM_EXCLUDES = {
     "startmenuexperiencehost.exe",
     "lockapp.exe",
     "taskmgr.exe",
+    # ScreenTale и Python — не должны попадать в список «игр»
     "screentale.exe",
     "python.exe",
     "py.exe",
+    # Оверлеи и мониторинг (новые имена Xbox Game Bar в Win10/11)
     "nvidia overlay.exe",
     "nvidia share.exe",
     "rtss.exe",
     "gamebar.exe",
     "gamebarft.exe",
+    "microsoft.xboxgamingoverlay.exe",   # новое имя Xbox Game Bar
+    "microsoft.xboxgamebar.exe",          # альтернативное имя
+    # Браузеры — обычно не нужны как «игры»
+    "chrome.exe",
+    "firefox.exe",
+    "msedge.exe",
+    "opera.exe",
+    "brave.exe",
+    "vivaldi.exe",
+    # Мессенджеры
+    "discord.exe",
+    "telegram.exe",
+    "slack.exe",
+    # Игровые клиенты (лаунчеры, не сами игры)
+    "steam.exe",
+    "steamwebhelper.exe",
+    # Терминалы
     "cmd.exe",
     "powershell.exe",
     "conhost.exe",
+    "windowsterminal.exe",
 }
 
 

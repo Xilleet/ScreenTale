@@ -74,25 +74,50 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "4")
 os.makedirs(_local_hf, exist_ok=True)
 
+# Соответствие «целевой язык → regex-паттерн алфавита».
+# Используется is_target_script для детекции «на экране уже готовый перевод»,
+# чтобы не переводить уже переведённое. До v0.8 покрывались только ru и ko —
+# для остальных языков защита молча отключалась (см. AUDIT.md #6).
+# Регрессия: см. tests/test_translation.py::test_is_target_script_*.
+_TARGET_SCRIPT_PATTERNS = {
+    "ru": r"[а-яА-ЯёЁ]",
+    "uk": r"[а-яА-ЯёЁіїєґ]",          # укр. кириллица + і, ї, є, ґ
+    "be": r"[а-яА-ЯёЁіў]",            # бел. кириллица + і, ў
+    "ko": r"[\uac00-\ud7af]",         # Hangul
+    "ja": r"[\u3040-\u30ff\u4e00-\u9fff]",   # hiragana+katakana+CJK
+    "zh": r"[\u4e00-\u9fff]",        # CJK (упрощённый/традиционный)
+    "en": r"[a-zA-Z]",               # латиница (для направления *→en)
+    "es": r"[a-zA-ZáéíóúñüÁÉÍÓÚÑÜ]",
+    "pt": r"[a-zA-ZáâãàéêíóôõúçÁÂÃÀÉÊÍÓÔÕÚÇ]",
+    "fr": r"[a-zA-ZàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ]",
+    "de": r"[a-zA-ZäöüÄÖÜß]",
+    "it": r"[a-zA-ZàèéìíîòóùÀÈÉÌÍÎÒÓÙ]",
+    "pl": r"[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]",
+    "tr": r"[a-zA-ZçğıİöşüÇĞIÖŞÜ]",
+}
+
+
 def is_target_script(text: str, dst_lang: str) -> bool:
-    """Определяет, состоит ли текст преимущественно из целевого алфавита."""
+    """Определяет, состоит ли текст преимущественно из целевого алфавита.
+
+    Используется для защиты от «перевода уже переведённого»: если на экране
+    уже кириллица (а мы переводим EN→RU), кадр пропускается. Порог 25% —
+    чтобы не считать переводом один случайно распознанный кириллический символ.
+    """
     if not text or len(text.strip()) < 3:
         return False
-    
+
     clean = "".join(text.split())
     if not clean:
         return False
 
-    if dst_lang == "ru":
-        cyr_count = len(re.findall(r"[а-яА-ЯёЁ]", clean))
-        # Считаем переводом, только если кириллицы больше 25% от всех символов
-        return (cyr_count / len(clean)) >= 0.25
-        
-    elif dst_lang == "ko":
-        hangul_count = len(re.findall(r"[\uac00-\ud7af]", clean))
-        return (hangul_count / len(clean)) >= 0.25
+    pattern = _TARGET_SCRIPT_PATTERNS.get(dst_lang)
+    if not pattern:
+        # Неизвестный язык — не можем определить, лучше пропустить проверку.
+        return False
 
-    return False
+    matches = len(re.findall(pattern, clean))
+    return (matches / len(clean)) >= 0.25
 
 class _OnlineTask(QRunnable):
     """Онлайн-перевод в пуле потоков; результаты — через сигналы контроллера."""
@@ -1025,7 +1050,10 @@ class AppController(QObject):
 
     def _on_download_model(self, engine_id: str):
         print(f"[ctrl] Запрос на скачивание модели {engine_id}...")
-        use_gpu = bool(self.settings.get("gpu", False))
+        # gpu default True (как в DEFAULTS). Был False — после первого клика
+        # «Скачать модель» GPU-ускорение молча отключалось, модель грузилась на CPU.
+        # Регрессия: см. tests/test_app_controller.py::test_on_download_model_gpu_default.
+        use_gpu = bool(self.settings.get("gpu", True))
         self.model_manager.load(engine_id, use_gpu=use_gpu)
 
     def _on_delete_model(self, engine_id):

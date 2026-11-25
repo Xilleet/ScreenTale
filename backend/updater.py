@@ -165,14 +165,19 @@ class UpdateDownloadWorker(QObject):
             updater_bat = os.path.join(temp_dir, "updater.bat")
             extracted_dir = os.path.join(temp_dir, "extracted")
 
-            # --- ЗАМЕНИТЬ В ФАЙЛЕ backend/updater.py (около 107 строки) ---
+            # Имя текущего процесса: в dev-режиме — python.exe, в prod-сборке
+            # (PyInstaller) — ScreenTale.exe. Ждём завершения именно этого процесса,
+            # иначе в dev-режиме wait-loop мгновенно выходит и архив распаковывается
+            # поверх работающего приложения (см. AUDIT.md #3).
+            # Регрессия: см. tests/test_updater.py::test_bat_waits_for_actual_process_name.
+            current_exe_name = os.path.basename(sys.executable)
 
             with open(updater_bat, "w", encoding="utf-8") as f:
                 f.write(f"""@echo off
 chcp 65001 > nul
 :wait_process
 timeout /t 1 /nobreak > nul
-tasklist /FI "IMAGENAME eq ScreenTale.exe" 2>NUL | find /I /N "ScreenTale.exe">NUL
+tasklist /FI "IMAGENAME eq {current_exe_name}" 2>NUL | find /I /N "{current_exe_name}">NUL
 if "%ERRORLEVEL%"=="0" goto wait_process
 
 powershell -Command "Expand-Archive -Path '{zip_path}' -DestinationPath '{extracted_dir}' -Force"

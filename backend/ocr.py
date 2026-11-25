@@ -214,15 +214,15 @@ class OcrWorker(QThread):
         self._src_lang = src_lang
         win_tag = get_win_ocr_tag(src_lang)
 
-        # Если юзер предпочитает Windows OCR
+        # Если юзер предпочитает Windows OCR — пытаемся переключить на него.
+        # Если пакета нет — откатываемся на RapidOCR (с уведомлением).
         if self._preferred_engine == "windows":
             win_engine = WindowsOcrEngine(default_lang=win_tag)
-            
             res = win_engine.check_language_support(win_tag)
             ok = res[0] if (isinstance(res, tuple) and len(res) == 2) else bool(res)
-            
+
             if ok:
-                # Язык поддерживается Windows -> включаем быстрый нативный OCR
+                # Язык поддерживается Windows — переключаемся на нативный OCR
                 if self._engine is not None:
                     self._engine.unload()
                 win_engine.load(lang=win_tag)
@@ -232,23 +232,33 @@ class OcrWorker(QThread):
                 self.engine_changed.emit("windows")
                 print(f"[ocr] Язык Windows OCR переключен на: {win_tag}")
                 return
-            else:
-                # Пакета нет в Windows -> откат на RapidOCR
-                print(f"[ocr] В Windows нет пакета OCR [{win_tag}] -> авто-переход на RapidOCR!")
-                if self._active_engine_name != "rapidocr":
-                    rapid_engine = RapidOcrEngine(direction=self._preferred_direction)
-                    if rapid_engine.is_available():
-                        rapid_engine.load()
-                        if self._engine is not None:
-                            self._engine.unload()
-                        self._engine = rapid_engine
-                        self._active_engine_name = "rapidocr"
-                        self.state_changed.emit("ok", "RapidOCR: активен (авто-переход)")
-                        self.engine_changed.emit("rapidocr")
-                    return
 
+            # Пакета нет в Windows — откат на RapidOCR.
+            # ВАЖНО: если мы уже на RapidOCR — не делаем лишний reinit
+            # (RapidOcrEngine.load() игнорирует параметр lang, ре-инит бесполезен).
+            # Регрессия: см. tests/test_ocr_worker.py::test_do_set_language_no_dead_branch.
+            print(f"[ocr] В Windows нет пакета OCR [{win_tag}] -> авто-переход на RapidOCR!")
+            if self._active_engine_name != "rapidocr":
+                rapid_engine = RapidOcrEngine(direction=self._preferred_direction)
+                if rapid_engine.is_available():
+                    rapid_engine.load()
+                    if self._engine is not None:
+                        self._engine.unload()
+                    self._engine = rapid_engine
+                    self._active_engine_name = "rapidocr"
+                    self.state_changed.emit("ok", "RapidOCR: активен (авто-переход)")
+                    self.engine_changed.emit("rapidocr")
+                else:
+                    self.state_changed.emit(
+                        "error", "RapidOCR недоступен — невозможно переключиться"
+                    )
+                return
+            # Уже на RapidOCR — язык не влияет, ничего не делаем.
+            return
+
+        # Если preferred_engine != "windows" — просто передаём lang в активный движок.
+        if self._engine is not None and hasattr(self._engine, "load"):
             self._engine.load(lang=win_tag)
-            print(f"[ocr] Язык Windows OCR переключен на: {win_tag}")
 
     def _do_set_direction(self, direction: str) -> None:
         self._preferred_direction = direction

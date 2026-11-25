@@ -16,7 +16,7 @@ from PySide6.QtCore import (
     Signal,
     qVersion,
 )
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
