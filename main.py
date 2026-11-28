@@ -603,6 +603,7 @@ class AppController(QObject):
             if self._last_auto_text and norm.startswith(self._last_auto_text):
                 self._last_auto_text = norm
                 self._pending_auto_text = text
+                # P0: сохраняем blocks от этого конкретного кадра, а не от следующего.
                 self._pending_auto_blocks = blocks
                 self._auto_timer.start(int(self.settings.get("auto_delay_ms", 800)))
                 return
@@ -611,6 +612,7 @@ class AppController(QObject):
                 return
             self._last_auto_text = norm
             self._pending_auto_text = text
+            # P0: сохраняем blocks от этого конкретного кадра, а не от следующего.
             self._pending_auto_blocks = blocks
             self._auto_timer.start(int(self.settings.get("auto_delay_ms", 800)))
             return
@@ -641,8 +643,11 @@ class AppController(QObject):
             if len(clusters) > 1:
                 numbered_prompt = "\n".join(f"[{i + 1}] {c['text']}" for i, c in enumerate(clusters))
                 print(f"[ctrl] Структурированный запрос из {len(clusters)} бабблов:\n{numbered_prompt}")
+                # P0: передаём clusters, чтобы response-side не re-кластеризовал.
                 self._request_translation(numbered_prompt, blocks=blocks, clusters=clusters)
             else:
+                # P0: одиночный кластер (или 0) — тоже передаём, чтобы response-side
+                # использовал его, а не re-кластеризовал blocks.
                 self._request_translation(text, blocks=blocks, clusters=clusters or None)
             return
 
@@ -798,6 +803,8 @@ class AppController(QObject):
 
     def _execute_auto_translate(self):
         text = self._pending_auto_text
+        # P0: blocks от того же OCR-кадра, что и text. Раньше _last_blocks
+        # мог быть перезаписан следующим кадром за время debounce-таймера.
         blocks = getattr(self, "_pending_auto_blocks", [])
         print(f"[ctrl] дебаунс-таймер: {text[:50]!r}")
         vlog(f"[ctrl] дебаунс-таймер (full): {text!r}")
@@ -811,12 +818,12 @@ class AppController(QObject):
         self._last_sent_auto_text = norm
         self._last_source = text
 
-        # Auto Mode structured handling для InPlace. Раньше Auto отправлял
+        # P0: Auto Mode structured handling для InPlace. Раньше Auto отправлял
         # plain text, но response-side (_flush_pending_translations) вызывал
         # parse_structured_translation(translation, len(clusters)) — mismatch,
         # потому что перевод пришёл как одна строка без [N]-маркеров.
         # Теперь для InPlace строим structured prompt и передаём clusters —
-        # как manual mode делает.
+        # как manual mode делает на строке ~644.
         mode = self.settings.get("overlay_mode", "chat")
         if mode == "inplace" and blocks:
             from frontend.inplace_canvas import cluster_lines
@@ -868,6 +875,10 @@ class AppController(QObject):
         engine = self.settings.get("translator", "google")
 
         print(f"[ctrl] запрос перевода ({src_lang.upper()} -> {dst_lang.upper()}): движок={engine}, seq={seq}")
+        # P0: храним clusters (index 5) рядом с blocks (index 4), чтобы
+        # response-side (_flush_pending_translations) использовал их вместо
+        # повторной кластеризации. clusters=None — для chat-режима или если
+        # кластеризация не выполнялась (тогда response-side сделает её сам).
         self._pending_translations[seq] = [
             time.strftime("%H:%M:%S"), time.monotonic(), text, None,
             target_blocks, clusters
@@ -923,6 +934,9 @@ class AppController(QObject):
             entry = self._pending_translations.get(next_seq)
             if entry is None:
                 return
+            # P0: entry теперь 6-элементный (timestamp, sent_mono, source,
+            # translation, blocks, clusters). Старые 5-элементные записи
+            # обрабатываем через fallback.
             if len(entry) >= 6:
                 timestamp, sent_mono, source, translation, _blocks, stored_clusters = entry[:6]
             elif len(entry) >= 5:
@@ -957,6 +971,10 @@ class AppController(QObject):
                     blocks = _blocks if _blocks else getattr(self, "_last_blocks", [])
                     if blocks:
                         self.trans_win.hide()
+                        # P0: используем сохранённые clusters (из request-time),
+                        # а не re-кластеризуем blocks. Раньше каждый response
+                        # вызывал cluster_lines(blocks) заново — результат мог
+                        # отличаться от того, под что строился structured prompt.
                         if stored_clusters is not None:
                             clusters = stored_clusters
                         else:
@@ -1121,9 +1139,15 @@ class AppController(QObject):
             if value is None:
                 self._pinned_hwnd = 0
                 self._pinned_exe = ""
+                # Phase 1: отключаем WGC capture — возврат к ImageGrab (desktop).
+                self.ocr.set_capture_target(0)
             else:
                 self._pinned_hwnd = getattr(value, "hwnd", 0)
                 self._pinned_exe = getattr(value, "exe_name", "")
+                # Phase 1: включаем WGC window-targeted capture для pinned окна.
+                # Overlay НЕ попадает в кадр — self-feeding исключён.
+                if self._pinned_hwnd != 0:
+                    self.ocr.set_capture_target(self._pinned_hwnd)
         elif key == "overlay_mode":
             if value == "inplace":
                 # Переключились на In-Place: окно чата тихо прячется
@@ -1390,11 +1414,15 @@ class AppController(QObject):
             self._pinned_exe = active.exe_name
             self.settings_win._select_game_target(active)
             self.trans_win.show_notice(f"[📌 Привязано к окну: {active.exe_name}]")
+            # Phase 1: включаем WGC capture для pinned окна.
+            self.ocr.set_capture_target(active.hwnd)
         else:
             self._pinned_hwnd = 0
             self._pinned_exe = ""
             self.settings_win._select_game_target(None)
             self.trans_win.show_notice("[📌 Привязка сброшена (весь экран)]")
+            # Phase 1: отключаем WGC capture.
+            self.ocr.set_capture_target(0)
 
     def _track_pinned_window(self):
         """Фоновый мониторинг активного окна (Auto-Hide при Alt+Tab)."""

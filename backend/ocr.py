@@ -158,6 +158,8 @@ class OcrWorker(QThread):
         self._engine: BaseOcrEngine | None = None
         self._tasks: queue.Queue = queue.Queue()
         self._stop_flag = False
+        self._wgc_capture = None       # WgcWindowCapture instance
+        self._capture_hwnd = 0         # HWND окна для захвата
 
     # ---------- публичный API (потокобезопасно) ----------
     def read(self, bbox: tuple, context: str = "single") -> None:
@@ -174,6 +176,14 @@ class OcrWorker(QThread):
     def request_language(self, src_lang: str) -> None:
         """Сменить язык распознавания OCR на лету."""
         self._tasks.put(("set_language", str(src_lang)))
+
+    def set_capture_target(self, hwnd: int) -> None:
+        """После вызова OCR будет захватывать окно через Windows.Graphics.Capture
+        вместо ImageGrab.grab(desktop). Overlay не попадает в кадр.
+
+        hwnd=0 — отключить WGC, вернуться к ImageGrab (desktop capture).
+        """
+        self._tasks.put(("set_capture_target", int(hwnd)))
 
     def stop(self) -> None:
         """Остановить поток воркера."""
@@ -207,6 +217,12 @@ class OcrWorker(QThread):
                 self._do_set_direction(task[1])
             elif kind == "set_language":
                 self._do_set_language(task[1])
+            elif kind == "set_capture_target":
+                self._do_set_capture_target(task[1])
+
+        if self._wgc_capture is not None:
+            self._wgc_capture.stop()
+            self._wgc_capture = None
 
         if self._engine is not None:
             self._engine.unload()   
@@ -359,6 +375,33 @@ class OcrWorker(QThread):
             # Для Windows OCR GPU не требуется
             self.gpu_result.emit(True, False, "Windows OCR использует нативные API Windows")
 
+    def _do_set_capture_target(self, hwnd: int) -> None:
+        """включить/выключить WGC window-targeted capture."""
+        # Останавливаем предыдущую сессию
+        if self._wgc_capture is not None:
+            self._wgc_capture.stop()
+            self._wgc_capture = None
+            self._capture_hwnd = 0
+
+        if hwnd == 0:
+            print("[ocr] WGC отключён, возврат к ImageGrab (desktop capture)")
+            return
+
+        try:
+            from backend.wgc_capture import WgcWindowCapture, is_wgc_available
+            if not is_wgc_available():
+                print("[ocr] windows-capture не установлен — WGC недоступен, остаюсь на ImageGrab")
+                return
+            cap = WgcWindowCapture(hwnd, min_interval_ms=100)
+            if cap.start():
+                self._wgc_capture = cap
+                self._capture_hwnd = hwnd
+                print(f"[ocr] WGC активирован для hwnd={hwnd}")
+            else:
+                print(f"[ocr] WGC не стартовал для hwnd={hwnd} — ImageGrab fallback")
+        except Exception as e:
+            print(f"[ocr] ошибка инициализации WGC для hwnd={hwnd}: {e} — ImageGrab fallback")
+
     def _do_read(self, bbox: tuple, context: str) -> None:
         if self._engine is None:
             self.read_result.emit(
@@ -375,8 +418,28 @@ class OcrWorker(QThread):
                 int(right * dpi_scale),
                 int(bottom * dpi_scale),
             )
-            # 1. Захват экрана (all_screens=True для мультимониторов)
-            img = ImageGrab.grab(bbox=physical, all_screens=True)
+
+            # WGC window-targeted capture (если активирован).
+            # Overlay НЕ попадает в кадр — self-feeding исключён.
+            # Fallback на ImageGrab если WGC недоступен или кадра ещё нет.
+            img = None
+            if self._wgc_capture is not None and self._capture_hwnd != 0:
+                try:
+                    from backend.wgc_capture import screen_to_window_physical
+                    from backend.window_tracker import get_window_exact_rect
+                    win_rect = get_window_exact_rect(self._capture_hwnd)
+                    if win_rect is not None:
+                        rel_physical = screen_to_window_physical(
+                            bbox, win_rect, dpi_scale)
+                        img = self._wgc_capture.crop_region(rel_physical)
+                except Exception as e:
+                    print(f"[ocr] WGC crop failed: {e} — ImageGrab fallback")
+                    img = None
+
+            if img is None:
+                # Fallback: desktop capture через ImageGrab.
+                # 1. Захват экрана (all_screens=True для мультимониторов)
+                img = ImageGrab.grab(bbox=physical, all_screens=True)
 
             # 2. Адаптивная подготовка размера кадра
             img, prep_scale = _preprocess_for_ocr(img)

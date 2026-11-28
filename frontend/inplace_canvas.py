@@ -66,8 +66,9 @@ def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 1.15) -> list[dic
             continue
         # Пропускаем одиночные буквы-артефакты (i, e, o, \) если это не знаки диалога
         # или CJK-символ (кана/хангыль/хань — валидная одиночная реплика).
-        if len(txt) == 1 and txt not in ("!", "?", "—", "-") and not _is_cjk_single(txt):
-            continue
+        if len(txt) == 1 and txt not in ("!", "?", "—", "-"):  # noqa: SIM102
+            if not _is_cjk_single(txt):
+                continue
         valid_blocks.append(b)
 
     if not valid_blocks:
@@ -423,6 +424,44 @@ class InPlaceCanvas(QWidget):
             print(f"[inplace] Защита от захвата: {status_text} | результат Windows API: {bool(ok)}")
         except Exception as e:
             print(f"[inplace] Ошибка переключения защиты захвата: {e}")
+
+    _WIN32_STYLES_APPLIED = False
+
+    def _apply_win32_overlay_styles(self):
+        """Добавляет WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE к окну.
+
+        Вызывается из showEvent (HWND уже создан). Идемпотентно — если стили
+        уже применены.
+        """
+        if sys.platform != "win32" or self._WIN32_STYLES_APPLIED:
+            return
+        try:
+            hwnd = int(self.winId())
+            if not hwnd:
+                return
+
+            user32 = ctypes.windll.user32
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            WS_EX_NOACTIVATE = 0x08000000
+            # WS_EX_TOOLWINDOW уже установлен Qt.WindowType.Tool, но OR'им для надёжности
+            WS_EX_TOOLWINDOW = 0x00000080
+
+            ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            new_style = ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+            if new_style != ex_style:
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+                print("[inplace] Win32 overlay styles применены: "
+                      "WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE")
+            self._WIN32_STYLES_APPLIED = True
+        except Exception as e:
+            print(f"[inplace] Ошибка применения Win32 overlay styles: {e}")
+
+    def showEvent(self, event):
+        """Применяем Win32 styles при первом показе (HWND уже создан)."""
+        super().showEvent(event)
+        self._apply_win32_overlay_styles()
 
     def paintEvent(self, event):
         """Отрисовка плашек перевода на холсте с поддержкой пространственного наклона."""
