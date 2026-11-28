@@ -352,7 +352,7 @@ class AppController(QObject):
             # B7: в inplace-режиме показ чат-окна с «[Авто-режим не запущен]»
             # нарушает UX — чат должен быть скрыт. Варним только в режиме чата.
             if self.settings.get("overlay_mode", "chat") == "chat":
-                self.trans_win.show_translation("[Авто-режим не запущен]")
+                self.trans_win.show_notice("[Авто-режим не запущен]")
             else:
                 print("[auto] pause нажат в inplace-режиме, но авто-режим не запущен")
             return
@@ -396,10 +396,10 @@ class AppController(QObject):
             self._pending_translations.clear()
             self._loading_queue.clear()
             self.trans_win.set_status("off", "Ожидание")
-            self.trans_win.show_translation("[Перевод остановлен]")
+            self.trans_win.show_notice("[Перевод остановлен]")
         elif action == "clear":
             self.trans_win.clear_history()
-            self.trans_win.show_translation("[История очищена]")
+            self.trans_win.show_notice("[История очищена]")
         elif action == "ghost":
             self.trans_win.toggle_ghost_mode()
 
@@ -677,7 +677,7 @@ class AppController(QObject):
         x, y, intersects = self._compute_trans_window_pos(bbox)
         bbox_rect = QRect(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1])
         self.trans_win.set_forbidden_rect(bbox_rect)
-        self.trans_win.show_translation(
+        self.trans_win.show_notice(
             "[Авто-режим включён: отслеживаю область. Alt+W — выключить]",
             x=x, y=y)
         if intersects:
@@ -899,7 +899,7 @@ class AppController(QObject):
                     return
                 if now_mono - sent_mono < TRANSLATION_TIMEOUT_SEC:
                     return
-                self.trans_win.show_translation(f"[Нет перевода: {source[:30]}...]")
+                self.trans_win.show_notice(f"[Нет перевода: {source[:30]}...]")
                 del self._pending_translations[next_seq]
                 self._last_shown_seq = next_seq
                 continue
@@ -970,7 +970,7 @@ class AppController(QObject):
 
         self._fallback_active = True
         self._pending_fallback = self._last_source
-        self.trans_win.show_translation(
+        self.trans_win.show_notice(
             f"[Интернет недоступен — переключаюсь на офлайн ({ENGINE_LABELS.get(available_engine)})...]"
         )
         self.trans_win.set_status("busy", "Переключение на офлайн…")
@@ -1015,7 +1015,7 @@ class AppController(QObject):
         if self._fallback_active:
             self._fallback_active = False
             self._pending_fallback = None
-            self.trans_win.show_translation(
+            self.trans_win.show_notice(
                 f"[Не удалось переключиться на офлайн-модель: {_short(error)}]")
             self.trans_win.set_status("error", "Модель не загрузилась")
 
@@ -1340,7 +1340,7 @@ class AppController(QObject):
             print(f"[ctrl] повтор перевода для bbox={self._last_bbox}")
             self.ocr.read(self._last_bbox, context="single")
         else:
-            self.trans_win.show_translation("[Нет сохранённой области для повтора]")
+            self.trans_win.show_notice("[Нет сохранённой области для повтора]")
 
     def _pin_to_current_active_window(self):
         """Быстрая привязка по клику на кнопку 📌 на тулбаре."""
@@ -1349,12 +1349,12 @@ class AppController(QObject):
             self._pinned_hwnd = active.hwnd
             self._pinned_exe = active.exe_name
             self.settings_win._select_game_target(active)
-            self.trans_win.show_translation(f"[📌 Привязано к окну: {active.exe_name}]")
+            self.trans_win.show_notice(f"[📌 Привязано к окну: {active.exe_name}]")
         else:
             self._pinned_hwnd = 0
             self._pinned_exe = ""
             self.settings_win._select_game_target(None)
-            self.trans_win.show_translation("[📌 Привязка сброшена (весь экран)]")
+            self.trans_win.show_notice("[📌 Привязка сброшена (весь экран)]")
 
     def _track_pinned_window(self):
         """Фоновый мониторинг активного окна (Auto-Hide при Alt+Tab)."""

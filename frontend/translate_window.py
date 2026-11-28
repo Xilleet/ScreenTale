@@ -1082,7 +1082,10 @@ class TranslateWindow(QWidget):
         self._ghost_mode = not self._ghost_mode
         self.toolbar.set_ghost_active(self._ghost_mode)
         status_txt = "ВКЛ (клики сквозь окно)" if self._ghost_mode else "ВЫКЛ"
-        self.show_translation(f"[Сквозной клик: {status_txt}]")
+        # show_notice вместо show_translation — это статусное сообщение,
+        # не перевод. Ранее show_translation сам роутил по startswith('['),
+        # теперь API явный.
+        self.show_notice(f"[Сквозной клик: {status_txt}]")
         return self._ghost_mode
 
     def nativeEvent(self, eventType, message):
@@ -1146,15 +1149,29 @@ class TranslateWindow(QWidget):
     def mouseReleaseEvent(self, event):
         self._move_pos = None
 
+    def show_notice(self, text, x=None, y=None):
+        """Статусное сообщение в капсуле-нотисе (вверху окна переводчика).
+
+        Явный API для статусных сообщений: '[Авто-режим не запущен]',
+        '[Перевод остановлен]', '[📌 Привязано к окну: …]' и т.д.
+        Ранее show_translation сам маршрутизировал по text.startswith('['),
+        но это ломало реальные переводы, которые начинаются с '[' — например
+        '[NPC] Привет' (OCR прочитал скобки) или '[1] Первая строка'
+        (структурированный ответ LLM для одного кластера).
+        """
+        self._notice_toast.show_notice(text)
+        if x is not None and y is not None:
+            raw_pos = QPoint(x + 20 - SHADOW_MARGIN, y + 20 - SHADOW_MARGIN)
+            self.move(self.clamp_to_screen(raw_pos))
+        if not self.isVisible() and not self.force_hidden and not self._is_paused:
+            self.show()
+
     def show_translation(self, text, x=None, y=None):
-        if text.startswith("["):
-            self._notice_toast.show_notice(text)
-            if x is not None and y is not None:
-                raw_pos = QPoint(x + 20 - SHADOW_MARGIN, y + 20 - SHADOW_MARGIN)
-                self.move(self.clamp_to_screen(raw_pos))
-            if not self.isVisible() and not self.force_hidden and not self._is_paused:
-                self.show()
-            return
+        # Раньше тут был if text.startswith('['): → _notice_toast.show_notice(text).
+        # Это было fragile-роутингом: реальные переводы с '[' в начале (OCR misread
+        # '(' → '[', или LLM structured '[1] …') улетали в нотис вместо истории.
+        # Теперь статусные сообщения идут через явный show_notice(), а сюда —
+        # только содержательные переводы (с timestamp или без).
 
         # Разбираем (timestamp, body) один раз — это пригодится и для рендера,
         # и для кэша _history, по которому _reapply_text_opacity пере-рисует
