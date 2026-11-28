@@ -1815,7 +1815,9 @@ class SettingsWindow(QWidget):
 
         import os
         total_cores = os.cpu_count() or 4
-        self._auto_threads = max(1, (os.cpu_count() // 2) - 1)
+        # os.cpu_count() может вернуть None в песочницах/контейнерах;
+        # используем уже защищённый total_cores, иначе None // 2 роняет TypeError.
+        self._auto_threads = max(1, (total_cores // 2) - 1)
 
         # 1. Заголовок
         lbl_threads = QLabel(t("ui.adv.threads", "Потоки процессора (CPU Threads)"))
@@ -2006,10 +2008,12 @@ class SettingsWindow(QWidget):
             gpu_txt,
         )
         self._update_cache_display()
-        self._on_setting_changed("ocr_engine", self.settings.get("ocr_engine", "windows"))
-        self._on_setting_changed("ocr_direction", self.settings.get("ocr_direction", "horizontal"))
+        # NOTE: ранее _on_setting_changed("ocr_engine", ...) вызывался дважды
+        # подряд (один раз напрямую, второй — через current_ocr). Это двойная
+        # работа: перерисовка OCR-хинта и проверка предупреждения о языке.
         current_ocr = self.settings.get("ocr_engine", "windows")
         self._on_setting_changed("ocr_engine", current_ocr)
+        self._on_setting_changed("ocr_direction", self.settings.get("ocr_direction", "horizontal"))
         self.dir_row.setVisible(current_ocr == "rapidocr")
         self._on_setting_changed("src_lang", self.settings.get("src_lang", "en"))
         self._on_setting_changed("dst_lang", self.settings.get("dst_lang", "ru"))

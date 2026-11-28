@@ -18,6 +18,18 @@ WS_EX_APPWINDOW = 0x00040000
 DWMWA_CLOAKED = 14
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 
+
+# Module-level RECT для DwmGetWindowAttribute. Раньше класс объявлялся внутри
+# get_window_exact_rect() и пересоздавался при каждом вызове EnumWindows —
+# это и медленно, и ломает лёгкую identity-based оптимизацию ctypes.
+class _RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
 # Чёрный список системных утилит, фоновых хостов и консолей
 SYSTEM_EXCLUDES = {
     # Проводник и системные оболочки Windows 10/11
@@ -77,11 +89,12 @@ def get_window_exe_path(hwnd: int) -> str:
     """Возвращает полный путь к исполняемому файлу (.exe) по дескриптору окна HWND."""
     if not user32:
         return ""
+    kernel32 = ctypes.windll.kernel32
+    h_process = None
     try:
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
 
-        kernel32 = ctypes.windll.kernel32
         h_process = kernel32.OpenProcess(0x1000, False, pid.value)
         if not h_process:
             return ""
@@ -89,28 +102,22 @@ def get_window_exe_path(hwnd: int) -> str:
         buf = ctypes.create_unicode_buffer(1024)
         size = wintypes.DWORD(1024)
         if kernel32.QueryFullProcessImageNameW(h_process, 0, buf, ctypes.byref(size)):
-            kernel32.CloseHandle(h_process)
             return buf.value  # Возвращаем полный путь!
-
-        kernel32.CloseHandle(h_process)
+        return ""
     except Exception:
-        pass
-    return ""
+        return ""
+    finally:
+        # CloseHandle должен срабатывать на любом пути выхода, иначе при
+        # частых опросах get_running_games() течёт kernel handles.
+        if h_process:
+            kernel32.CloseHandle(h_process)
 
 def get_window_exact_rect(hwnd: int) -> QRect | None:
     """Возвращает точные видимые пиксели окна через DWM (отсекая системные тени Windows 10/11)."""
     if not dwmapi:
         return None
     try:
-        class RECT(ctypes.Structure):
-            _fields_ = [
-                ("left", ctypes.c_long),
-                ("top", ctypes.c_long),
-                ("right", ctypes.c_long),
-                ("bottom", ctypes.c_long),
-            ]
-
-        r = RECT()
+        r = _RECT()
         hr = dwmapi.DwmGetWindowAttribute(
             hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(r), ctypes.sizeof(r)
         )

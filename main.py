@@ -335,7 +335,9 @@ class AppController(QObject):
 
         # Привязываем сигналы тулбара и настроек
         self.trans_win.toolbar.pin_clicked.connect(self._pin_to_current_active_window)
-        self.settings.changed.connect(self._on_setting_changed)
+        # NOTE: settings.changed уже подключён к _on_setting_changed выше (строка ~286).
+        # Дублирующий connect вызывал двойную обработку каждой смены настройки:
+        # cpu_threads дважды перезапускал LLM-сервер, gpu — дважды звал set_device.
 
         # Подключаем точечный клик СКМ на уже существующем inplace_canvas,
         # созданном выше (строка ~175). Двойное создание было регрессией v0.7:

@@ -191,6 +191,12 @@ def clean_llama_dir() -> bool:
     # 2. Удаляем все старые DLL и .exe, чтобы не смешивать бэкенды
     d = get_llama_dir()
     if os.path.isdir(d):
+        # Раньше цикл делал `return False` на первом залоченном файле,
+        # оставляя остальные DLL на диске. Следующая установка смешивала
+        # старые и новые backend DLL — ровно то, чего должна была не допустить
+        # функция. Теперь собираем ошибки и продолжаем, а return False
+        # делаем только в конце, если хотя бы один файл не удалился.
+        any_failed = False
         for item in os.listdir(d):
             path = os.path.join(d, item)
             try:
@@ -200,10 +206,11 @@ def clean_llama_dir() -> bool:
                     shutil.rmtree(path)
             except OSError as e:
                 print(f"[runtime] не удалось удалить {item}: {e}")
-                return False
+                any_failed = True
+        if any_failed:
+            return False
     return True
 
-    # backend/runtime_manager.py
 
 def is_backend_supported(backend_id: str) -> tuple[bool, str]:
     """Проверяет аппаратную поддержку бэкенда. Возвращает (доступен, причина_если_нет)."""

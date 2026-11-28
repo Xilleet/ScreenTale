@@ -571,7 +571,12 @@ class ModelManager(QThread):
             model = model.to(device)
 
             if engine_id == ENGINE_NLLB:
-                tokenizer.src_lang = _NllbTranslator.SRC
+                # _NllbTranslator.SRC никогда не был определён (атрибут отсутствует
+                # в классе), что молча валило загрузку NLLB AttributeError'ом.
+                # Берём начальный src_lang из реестра языков: eng_Latn по умолчанию.
+                # На каждом translate() значение всё равно пересчитывается через
+                # get_nllb_code(src_lang), поэтому достаточно валидного старта.
+                tokenizer.src_lang = get_nllb_code("en")
                 self._translator = _NllbTranslator(model, tokenizer, device)
             else:
                 self._translator = _OpusTranslator(model, tokenizer, device)

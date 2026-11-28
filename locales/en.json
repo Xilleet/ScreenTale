@@ -2,7 +2,6 @@
   "sidebar.version": "version",
   "btn.download": "⬇ Download",
   "btn.delete": "Delete",
-  "ui.trans.models_catalog": "Verified GGUF Models Catalog",
   "ui.trans.vram_label": "Video Memory (VRAM):",
   "model.hymt.badge": "⚡ Weak PC / Laptop",
   "model.hymt.desc": "Lightweight translation model. Runs great on pure CPU and 2 GB VRAM GPUs.",
@@ -54,6 +53,8 @@
   "ui.general.autocopy_hint": "Translation result is always available via Ctrl+V.",
   "ui.general.streamer_mode": "Streamer Mode (Hide from OBS & Screenshots)",
   "ui.general.streamer_hint": "When enabled — overlay is visible only to you, hidden from streams and screenshots.",
+  "ui.general.adaptive_opacity": "Adaptive Background Opacity",
+  "ui.general.adaptive_opacity_hint": "The backdrop darkens on light backgrounds and clears on dark ones — the text stays readable. The slider above sets the floor opacity.",
 
   "ui.trans.pair_title": "Language Pair",
   "ui.trans.src_lang": "Source Language:",

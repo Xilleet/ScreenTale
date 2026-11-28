@@ -85,8 +85,11 @@ def load_locale(lang_code: str):
         try:
             with open(target_file, "r", encoding="utf-8") as jf:
                 _translations = json.load(jf)
+            # Ранее тут дублировали сообщение в print() и vlog() с разным форматом.
+            # По конвенции logging_setup print() = короткое, vlog() = полное.
+            # Оставляем только print(): на старте load_locale выполняется ДО
+            # set_verbose (main.py:187 vs :220), так что vlog всё равно no-op.
             print(f"[i18n] Загружен язык интерфейса: {lang_code} (строк: {len(_translations)})")
-            vlog(f"[i18n] Загружен язык интерфейса: {lang_code} ({len(_translations)} строк)")
             return
         except Exception as e:
             vlog(f"[i18n] Ошибка чтения {target_file}: {e}")

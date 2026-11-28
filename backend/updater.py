@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 
 from PySide6.QtCore import QObject, QRunnable, Signal
@@ -15,7 +16,13 @@ MANIFEST_URL = "https://github.com/Xilleet/ScreenTale/releases/latest/download/m
 
 
 def _parse_version(v_str: str) -> tuple:
-    """Преобразует '0.4.4', 'v0.5.0' в кортеж чисел (0, 5, 0)."""
+    """Преобразует строку версии в кортеж чисел.
+
+    Примеры:
+        '0.4.4'   -> (0, 4, 4)
+        'v0.5.0'  -> (0, 5, 0)
+        '0.7-beta-1' -> (0, 7, 0)   # суффикс после '-' отбрасывается
+    """
     cleaned = str(v_str).strip().lower().lstrip("v").split("-")[0]
     try:
         return tuple(int(x) for x in cleaned.split("."))
@@ -40,7 +47,6 @@ class UpdateCheckTask(QRunnable):
         self._on_update_found = on_update_found
 
     def run(self):
-        import time
 
         for attempt in range(2):
             try:

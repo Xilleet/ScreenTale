@@ -306,8 +306,10 @@ class LlamaServerTranslator:
         return data["choices"][0]["message"]["content"].strip()
 
     def _build_cmd(self, model: str) -> list:
-        # Авто-расчет: половина логических ядер, если стоит 0
-        effective_threads = self._n_threads if self._n_threads > 0 else max(1, (os.cpu_count() // 2) - 1)
+        # Авто-расчет: половина логических ядер, если стоит 0.
+        # os.cpu_count() может вернуть None в песочницах/контейнерах — guarded.
+        cpu_count = os.cpu_count() or 2
+        effective_threads = self._n_threads if self._n_threads > 0 else max(1, (cpu_count // 2) - 1)
 
         return [get_server_exe(), "-m", model,
                 "-ngl", "99" if self._use_gpu else "0",

@@ -197,7 +197,9 @@ class FloatingToolbar(QFrame):
     pin_clicked = Signal()
     lang_pair_clicked = Signal(str, str)
     open_settings_clicked = Signal()
-    dock_changed = Signal(bool)
+    # NOTE: dock_changed был объявлен, но нигде не подключался (grep dock_changed.connect = 0).
+    # Если понадобится следить за docking-state для persistence — вернуть сигнал
+    # вместе с подключением в AppController.
 
     BG_COLOR = QColor("#1e1b18")
     BORDER_COLOR = QColor("#e08e45")
@@ -291,7 +293,7 @@ class FloatingToolbar(QFrame):
         # 1. Повтор распознавания
         self.btn_retry = QPushButton()
         self.btn_retry.setObjectName("ToolbarBtn")
-        self.btn_retry.setToolTip("Повторить распознавание (Alt+R)")
+        self.btn_retry.setToolTip("Повторить распознавание")
         self.btn_retry.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_retry.setIcon(_load_ui_icon("refresh_64.png"))
         self.btn_retry.setIconSize(QSize(22, 22))
@@ -422,13 +424,11 @@ class FloatingToolbar(QFrame):
     def undock(self):
         """Открепляет тулбар в режим свободного полета."""
         self._is_docked = False
-        self.dock_changed.emit(False)
 
     def toggle_dock(self):
         if self._is_docked:
             self._is_docked = False
             self.move(self.x() - 15, max(10, self.y() - 20))
-            self.dock_changed.emit(False)
         else:
             self.dock_to_window(self._dock_anchor)
 
@@ -438,7 +438,6 @@ class FloatingToolbar(QFrame):
             self._is_docked = True
             self._dock_anchor = anchor
             self.align_to_window()
-            self.dock_changed.emit(True)
 
     def align_to_window(self, parent_geo=None):
         """Следует за окном перевода ТОЛЬКО если тулбар пристегнут (_is_docked == True)."""

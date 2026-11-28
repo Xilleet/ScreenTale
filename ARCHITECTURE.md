@@ -260,7 +260,7 @@ class XxxWorker(QThread):
 
 | Worker | File | Thread-safe API | Signals to GUI thread |
 |--------|------|-----------------|-----------------------|
-| `OcrWorker` | `backend/ocr.py` | `read(bbox, ctx)`, `request_engine(name)`, `request_language(lang)`, `request_direction(d)`, `request_gpu(bool)`, `stop()` | `state_changed(str,str)`, `cuda_status(bool)`, `read_result(tuple,str,list,str)`, `gpu_result(bool,bool,str)`, `engine_changed(str)` |
+| `OcrWorker` | `backend/ocr.py` | `read(bbox, ctx)`, `request_engine(name)`, `request_language(lang)`, `request_direction(d)`, `request_gpu(bool)`, `stop()` | `state_changed(str,str)`, `read_result(tuple,str,list,str)`, `gpu_result(bool,bool,str)`, `engine_changed(str)` |
 | `ModelManager` | `backend/translators.py` | `load(engine_id, ...)`, `unload()`, `translate(text, seq, src, dst)`, `set_device(bool)`, `stop()` | `progress_started()`, `progress(int,str)`, `ready(str)`, `failed(str,str)`, `translation_result(int,str)` |
 | `AutoModeWorker` | `backend/auto_mode.py` | `requestInterruption()` (Qt) | `region_changed()` |
 | `RuntimeDownloadWorker` | `backend/runtime_manager.py` | `start_download()`, `cancel()` | `progress(int,str)`, `finished(str)`, `failed(str,str)` |
@@ -1017,8 +1017,9 @@ the GUI never crashes due to a worker exception.
 {
   "font_size": 14,
   "theme": "dark",              // "dark" | "dark_classic" | "light"
-  "opacity": 0.95,              // 0.40 .. 1.00
-  "text_outline": false,
+  "frame_opacity": 0.78,        // 0.0 .. 1.00 — прозрачность подложки окна
+  "text_opacity": 1.0,          // 0.0 .. 1.00 — прозрачность текста (независимо от подложки)
+  "adaptive_opacity": false,    // авто-подстройка прозрачности подложки под фон (chat-режим)
   "src_lang": "en",             // any from LANGUAGES
   "dst_lang": "ru",
   "recent_pairs": [["en","ru"], ["ja","ru"], ["zh","ru"], ["ko","ru"]],
@@ -1031,9 +1032,9 @@ the GUI never crashes due to a worker exception.
   "auto_delay_ms": 800,         // 200 .. 2000
   "cpu_threads": 0,             // 0 = auto (cpu_count//2 - 1)
   "verbose_log": false,
-  "update_snooze_until": "",    // ISO date string
+  "update_snooze_until": "",    // ISO date string — snooze баннера обновлений
   "overlay_mode": "chat",       // "chat" | "inplace"
-  "welcome_completed": false,
+  "welcome_completed": false,   // legacy: не используется, есть is_first_run
   "streamer_mode": false,       // SetWindowDisplayAffinity
   "ui_lang": "auto",            // "auto" | "en" | "ru" | any code from locales/
   "hotkeys": {

@@ -111,7 +111,15 @@ class WindowsOcrEngine(BaseOcrEngine):
         if not HAS_WINRT or WinrtOcrEngine is None or Language is None:
             return (True, "")
 
-        tag = lang if "-" in lang else ("ja-JP" if lang == "ja" else "en-US")
+        # Если caller передал bare-код (например "zh", "ko"), достаём BCP-47 тег
+        # из реестра LANGUAGES. Ранее fallback знал только про "ja" и "en", а
+        # все остальные 10 языков проекта молча превращались в "en-US" — ложная
+        # поддержка для китайского/корейского/испанского и т.д.
+        if "-" not in lang:
+            from backend.languages import get_win_ocr_tag
+            tag = get_win_ocr_tag(lang)
+        else:
+            tag = lang
 
         if tag in _lang_cache:
             if _lang_cache[tag]:
@@ -364,7 +372,10 @@ class EasyOcrEngine(BaseOcrEngine):
         mdir = os.path.join(get_data_dir(), "easyocr_models")
         os.makedirs(mdir, exist_ok=True)
 
-        lang_list = [lang] if lang != "en" else ["en"]
+        # EasyOCR принимает ISO 639-1 (например "ja", "en", "ch_sim", "ko").
+        # Раньше тут был no-op conditional `if lang != "en" else ["en"]` —
+        # обе ветки давали [lang], упростил.
+        lang_list = [lang]
         self._reader = self._easyocr.Reader(lang_list, gpu=target_gpu, model_storage_directory=mdir)
         self._active_gpu = target_gpu
         return True

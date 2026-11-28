@@ -156,12 +156,16 @@ class SettingsManager(QObject):
         if "opacity" in data and "frame_opacity" not in data:
             data["frame_opacity"] = data["opacity"]
 
+        # NOTE: update_snooze_until должен быть в этом списке, иначе snooze
+        # пишется в config.json (main.py:1210), но не читается обратно и баннер
+        # обновления возвращается после каждого перезапуска.
         for key in ("theme", "font_size", "frame_opacity", "text_opacity",
                     "adaptive_opacity",
                     "gpu", "auto_copy", "auto_delay_ms", "verbose_log",
                     "ocr_engine", "ocr_direction", "welcome_completed",
                     "selected_gguf", "src_lang", "dst_lang", "recent_pairs",
-                    "cpu_threads", "streamer_mode", "ui_lang", "overlay_mode"):
+                    "cpu_threads", "streamer_mode", "ui_lang", "overlay_mode",
+                    "update_snooze_until"):
             if key in data:
                 self._values[key] = data[key]
 
