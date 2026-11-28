@@ -87,26 +87,49 @@ def test_map_luminance_ceiling_respects_base_when_base_high():
 
 # --------------------- sample_surrounding_luminance ----------------------
 
-def test_sample_luminance_fails_gracefully_offscreen():
-    """В headless/не-win32 окружении ImageGrab.grab падает → возвращаем -1.
+def test_sample_luminance_returns_minus1_when_grab_raises(monkeypatch):
+    """Если ImageGrab.grab бросает исключение — возвращаем -1 (graceful fallback).
 
-    Это и есть graceful fallback: вызывающий видит «замер не удался» и
-    оставляет базовую alpha, не роняя приложение и не вешая тесты.
+    Платформо-независимая проверка контракта: на Windows grab работает и
+    возвращает реальные пиксели фона (это и есть боевое поведение), а fallback
+    нужен для не-win32 / off-screen точек / ошибок захвата. Принудительно
+    поднимаем исключение из grab и проверяем, что функция не падает, а
+    сигнализирует вызывающему «замер не удался» (-1.0).
     """
+    from PIL import ImageGrab
+
     from frontend.translate_window import sample_surrounding_luminance
-    rect = QRect(100, 100, 300, 120)
-    lum = sample_surrounding_luminance(rect)
-    assert lum == -1.0, "в headless-окружении замер должен вернуть -1 (fallback)"
+
+    def _boom(*a, **kw):
+        raise RuntimeError("simulated grab failure")
+    monkeypatch.setattr(ImageGrab, "grab", _boom)
+    lum = sample_surrounding_luminance(QRect(100, 100, 300, 120))
+    assert lum == -1.0, "при ошибке grab функция должна вернуть -1 (fallback)"
 
 
-def test_sample_luminance_rejects_tiny_rect():
-    """Дегенератный rect (w<4 после bbox) → -1, без вызова ImageGrab."""
+def test_sample_luminance_rejects_degenerate_bbox(monkeypatch):
+    """bbox < 4px после расширения → -1 БЕЗ вызова ImageGrab (ранний guard).
+
+    Дегенератный случай: point-rect 1x1 + margin=0 → все 4 точки замера
+    совпадают, итоговый bbox 3x3 (< 4) → срабатывает ранний guard и функция
+    возвращает -1, не дёргая grab вовсе (что и проверяем заглушкой, которая
+    падала бы при любом вызове). Контракт детерминирован и не зависит от ОС.
+    """
+    from PIL import ImageGrab
+
     from frontend.translate_window import sample_surrounding_luminance
-    # margin по умолчанию 14, rect 2x2 → bbox > 4, но проверим рамку 0x0
-    lum = sample_surrounding_luminance(QRect(50, 50, 0, 0))
-    # 0x0 + margin 14 всё ещё даёт валидный bbox (28+px), поэтому замер пойдёт
-    # в ImageGrab и упадёт по except → -1. Главный инвариант: не падает.
+
+    grab_calls = {"n": 0}
+
+    def _must_not_call(*a, **kw):
+        grab_calls["n"] += 1
+        raise AssertionError("grab не должен вызываться при дегенератном bbox")
+
+    monkeypatch.setattr(ImageGrab, "grab", _must_not_call)
+    # point-rect 1x1 + margin 0 → все 4 точки (100,100), bbox 3x3 < 4 → guard
+    lum = sample_surrounding_luminance(QRect(100, 100, 1, 1), margin=0)
     assert lum == -1.0
+    assert grab_calls["n"] == 0, "guard должен сработать ДО вызова grab"
 
 
 # --------------------------- TranslateWindow -----------------------------
