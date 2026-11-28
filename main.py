@@ -270,6 +270,10 @@ class AppController(QObject):
         self._auto_bbox = None
         self._last_auto_text = ""
         self._pending_auto_text = ""
+        # Blocks от конкретного OCR-кадра, привязанные к _pending_auto_text.
+        # Раньше _execute_auto_translate брал blocks из _last_blocks (shared state),
+        # который мог быть перезаписан следующим кадром за время debounce-таймера.
+        self._pending_auto_blocks = []
         self._auto_timer = QTimer(self)
         self._auto_timer.setSingleShot(True)
         self._auto_timer.timeout.connect(self._execute_auto_translate)
@@ -599,6 +603,7 @@ class AppController(QObject):
             if self._last_auto_text and norm.startswith(self._last_auto_text):
                 self._last_auto_text = norm
                 self._pending_auto_text = text
+                self._pending_auto_blocks = blocks
                 self._auto_timer.start(int(self.settings.get("auto_delay_ms", 800)))
                 return
             if self._last_auto_text and SequenceMatcher(
@@ -606,6 +611,7 @@ class AppController(QObject):
                 return
             self._last_auto_text = norm
             self._pending_auto_text = text
+            self._pending_auto_blocks = blocks
             self._auto_timer.start(int(self.settings.get("auto_delay_ms", 800)))
             return
 
@@ -635,8 +641,10 @@ class AppController(QObject):
             if len(clusters) > 1:
                 numbered_prompt = "\n".join(f"[{i + 1}] {c['text']}" for i, c in enumerate(clusters))
                 print(f"[ctrl] Структурированный запрос из {len(clusters)} бабблов:\n{numbered_prompt}")
-                self._request_translation(numbered_prompt, blocks=blocks)
-                return
+                self._request_translation(numbered_prompt, blocks=blocks, clusters=clusters)
+            else:
+                self._request_translation(text, blocks=blocks, clusters=clusters or None)
+            return
 
         self._request_translation(text, blocks=blocks)
 
@@ -790,9 +798,11 @@ class AppController(QObject):
 
     def _execute_auto_translate(self):
         text = self._pending_auto_text
+        blocks = getattr(self, "_pending_auto_blocks", [])
         print(f"[ctrl] дебаунс-таймер: {text[:50]!r}")
         vlog(f"[ctrl] дебаунс-таймер (full): {text!r}")
         self._pending_auto_text = ""
+        self._pending_auto_blocks = []
         if not text.strip():
             return
         norm = " ".join(text.lower().split())
@@ -800,10 +810,32 @@ class AppController(QObject):
             return
         self._last_sent_auto_text = norm
         self._last_source = text
+
+        # Auto Mode structured handling для InPlace. Раньше Auto отправлял
+        # plain text, но response-side (_flush_pending_translations) вызывал
+        # parse_structured_translation(translation, len(clusters)) — mismatch,
+        # потому что перевод пришёл как одна строка без [N]-маркеров.
+        # Теперь для InPlace строим structured prompt и передаём clusters —
+        # как manual mode делает.
+        mode = self.settings.get("overlay_mode", "chat")
+        if mode == "inplace" and blocks:
+            from frontend.inplace_canvas import cluster_lines
+            clusters = cluster_lines(blocks)
+            if len(clusters) > 1:
+                numbered_prompt = "\n".join(
+                    f"[{i + 1}] {c['text']}" for i, c in enumerate(clusters))
+                print(f"[ctrl] Auto: структурированный запрос из {len(clusters)} бабблов")
+                self._request_translation(numbered_prompt, blocks=blocks, clusters=clusters)
+            else:
+                # Single cluster (или 0) — передаём его, чтобы response-side
+                # не re-кластеризовал. Если clusters пуст — clusters=None.
+                self._request_translation(text, blocks=blocks, clusters=clusters or None)
+            return
+
         self._request_translation(text)
 
     # ---------- перевод ----------
-    def _request_translation(self, text, blocks=None):
+    def _request_translation(self, text, blocks=None, clusters=None):
         if not text.strip():
             return
 
@@ -837,7 +869,8 @@ class AppController(QObject):
 
         print(f"[ctrl] запрос перевода ({src_lang.upper()} -> {dst_lang.upper()}): движок={engine}, seq={seq}")
         self._pending_translations[seq] = [
-            time.strftime("%H:%M:%S"), time.monotonic(), text, None, target_blocks
+            time.strftime("%H:%M:%S"), time.monotonic(), text, None,
+            target_blocks, clusters
         ]
         self.trans_win.set_status("busy", "Перевод…")
 
@@ -890,10 +923,14 @@ class AppController(QObject):
             entry = self._pending_translations.get(next_seq)
             if entry is None:
                 return
-            if len(entry) >= 5:
+            if len(entry) >= 6:
+                timestamp, sent_mono, source, translation, _blocks, stored_clusters = entry[:6]
+            elif len(entry) >= 5:
                 timestamp, sent_mono, source, translation, _blocks = entry[:5]
+                stored_clusters = None
             else:
                 timestamp, sent_mono, source, translation = entry
+                stored_clusters = None
             if translation is None:
                 if next_seq in self._loading_queue:
                     return
@@ -917,11 +954,14 @@ class AppController(QObject):
                 mode = self.settings.get("overlay_mode", "chat")
                 if mode == "inplace":
                     self.trans_win.hide()
-                    blocks = entry[4] if len(entry) > 4 else getattr(self, "_last_blocks", [])
+                    blocks = _blocks if _blocks else getattr(self, "_last_blocks", [])
                     if blocks:
                         self.trans_win.hide()
-                        from frontend.inplace_canvas import cluster_lines
-                        clusters = cluster_lines(blocks)
+                        if stored_clusters is not None:
+                            clusters = stored_clusters
+                        else:
+                            from frontend.inplace_canvas import cluster_lines
+                            clusters = cluster_lines(blocks)
                         # Прозрачность текста в In-Place — отдельная от подложки настройка.
                         text_op = float(self.settings.get("text_opacity", 1.0))
                         if len(clusters) > 1:

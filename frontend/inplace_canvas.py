@@ -2,6 +2,7 @@
 import ctypes
 import math
 import sys
+import unicodedata
 from ctypes import wintypes
 from dataclasses import dataclass
 
@@ -28,6 +29,28 @@ class InPlaceBlock:
     angle: float = 0.0
     text_opacity: float = 1.0   # 0.0..1.0, применяется к цвету текста в paintEvent
 
+
+def _is_cjk_single(ch: str) -> bool:
+    """True, если одиночный символ — CJK (kana/hangul/han), валидная реплика.
+
+    Одиночные Latin-буквы — обычно OCR-артефакты (осколки 'i', 'e', 'o', '\').
+    Одиночные CJK-символы — валидные: японские кана (ね, は), корейские слоги (아),
+    китайские иероглифы. Раньше cluster_lines отбрасывала ВСЕ одиночные символы
+    кроме !,?,—,- — это ломало японский/корейский/китайский текст.
+    """
+    if not ch:
+        return False
+    try:
+        name = unicodedata.name(ch, "")
+        upper = name.upper()
+        return any(s in upper for s in (
+            "HIRAGANA", "KATAKANA", "HANGUL", "CJK", "IDEOGRAPHIC",
+            "BOPOMOFO", "YI",
+        ))
+    except ValueError:
+        return False
+
+
 def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 1.15) -> list[dict]:
     """Усовершенствованная кластеризация для сложных интерфейсов и бабблов.
     Отсеивает одиночный мусор OCR и предотвращает слипание независимых блоков.
@@ -42,12 +65,22 @@ def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 1.15) -> list[dic
         if not txt:
             continue
         # Пропускаем одиночные буквы-артефакты (i, e, o, \) если это не знаки диалога
-        if len(txt) == 1 and txt not in ("!", "?", "—", "-"):
+        # или CJK-символ (кана/хангыль/хань — валидная одиночная реплика).
+        if len(txt) == 1 and txt not in ("!", "?", "—", "-") and not _is_cjk_single(txt):
             continue
         valid_blocks.append(b)
 
     if not valid_blocks:
         return []
+
+    # Динамический лимит высоты кластера: раньше был hardcoded 140px, что ломало
+    # большие VN-диалоговые окна (8+ строк по 20px = 160px > 140). Берём median
+    # высоту блоков × 12 как верхнюю границу, но не меньше 140 (для manga).
+    # Множитель 12: VN-диалог 8 строк × 22px = 176px, max(140, 20*12)=240 —
+    # проходит. Manga с 15px строками: max(140, 15*12)=180 — 12 строк, достаточно.
+    heights = [b["rect"][3] for b in valid_blocks if b["rect"][3] > 0]
+    median_h = sorted(heights)[len(heights) // 2] if heights else 20
+    max_cluster_h = max(140, median_h * 12)
 
     # Сортируем: сверху вниз по Y, затем слева направо по X
     sorted_blocks = sorted(valid_blocks, key=lambda b: (b["rect"][1], b["rect"][0]))
@@ -73,14 +106,14 @@ def cluster_lines(blocks: list[dict], max_v_gap_ratio: float = 1.15) -> list[dic
             h_right = min(cx + cw, bx + bw)
             h_overlap = max(0, h_right - h_left)
             min_w = min(cw, bw)
-            
+
             horizontal_aligned = (h_overlap / max(min_w, 15)) >= 0.45
             current_cluster_height = (c_bottom - cy) + bh
-            not_too_tall = current_cluster_height <= 140
+            not_too_tall = current_cluster_height <= max_cluster_h
 
             next_line = (
-                -avg_h * 0.2 <= v_gap <= avg_h * max_v_gap_ratio 
-                and horizontal_aligned 
+                -avg_h * 0.2 <= v_gap <= avg_h * max_v_gap_ratio
+                and horizontal_aligned
                 and not_too_tall
             )
 
