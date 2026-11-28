@@ -1034,7 +1034,7 @@ the GUI never crashes due to a worker exception.
   "verbose_log": false,
   "update_snooze_until": "",    // ISO date string — snooze баннера обновлений
   "overlay_mode": "chat",       // "chat" | "inplace"
-  "welcome_completed": false,   // legacy: не используется, есть is_first_run
+  // welcome_completed удалён — не использовался.
   "streamer_mode": false,       // SetWindowDisplayAffinity
   "ui_lang": "auto",            // "auto" | "en" | "ru" | any code from locales/
   "hotkeys": {

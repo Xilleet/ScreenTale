@@ -107,7 +107,11 @@ def detect_best_backend() -> str:
         import ctypes
         nvml = ctypes.WinDLL("nvml.dll")
         if nvml.nvmlInit_v2() == 0:
-            nvml.nvmlShutdown()
+            # D3: ранее тут звали nvml.nvmlShutdown(), что инвалидировало
+            # _nvml_handle в translators.py:get_vram_info (он держит хэндл
+            # постоянно между вызовами для VRAM-мониторинга). После shutdown
+            # get_vram_info молча возвращала None. NVML сама освобождается
+            # при выходе процесса — ручной shutdown здесь не нужен.
             return "cuda12"
     except Exception:
         pass

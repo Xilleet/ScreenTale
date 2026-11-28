@@ -596,6 +596,19 @@ class ModelManager(QThread):
                 self.failed.emit(ENGINE_QWEN, "Файл .gguf или llama-server.exe не найдены")
                 return
 
+            # A4: Smoke Test перед каждым start(), не только после свежего
+            # скачивания. ARCHITECTURE.md обещает «mandatory Smoke Test before
+            # use». Если llama-server.exe уже стоит (маркер .backend есть) и
+            # бинарник позже сломался (антивирус, частичная запись, замена DLL),
+            # без smoke test пользователь ждал бы до 180с и видел RuntimeError.
+            # Теперь — человеческая диагностика AVX2/VC++ из run_smoke_test().
+            from backend.runtime_manager import run_smoke_test
+            smoke_ok, smoke_msg = run_smoke_test()
+            if not smoke_ok:
+                self._drop_model()
+                self.failed.emit(ENGINE_QWEN, f"Smoke test: {smoke_msg}")
+                return
+
             self.progress.emit(-1, "Запуск llama-server…")
             self._drop_model()
             # Передаем n_threads в транслятор:

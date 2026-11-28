@@ -77,3 +77,15 @@ class HotkeyManager(QObject):
     def shutdown(self):
         for action in list(self._bindings):
             self.unregister(action)
+        # F2: ранее shutdown() снимал только RegisterHotKey bindings, но не
+        # убирал native event filter с QApplication. Qt удерживал dangling
+        # указатель на _NativeFilter — мог крэшить на следующем native event
+        # (например, в тестах или при пересоздании HotkeyManager).
+        app = QApplication.instance()
+        if app is not None and self._filter is not None:
+            try:
+                app.removeNativeEventFilter(self._filter)
+            except RuntimeError:
+                # Filter уже удалён Qt-side — безопасно игнорируем.
+                pass
+            self._filter = None

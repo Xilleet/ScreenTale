@@ -131,11 +131,17 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _assign_to_kill_job(proc) -> None:
-    """Windows: привязать процесс к Job Object, чтобы он умер вместе с приложением."""
+def _assign_to_kill_job(proc) -> bool:
+    """Windows: привязать процесс к Job Object, чтобы он умер вместе с приложением.
+
+    Возвращает True, если привязка прошла успешно; False — если что-то помешало
+    (старая Windows без nested-jobs, права, отсутствие _handle у Popen на
+    некоторых сборках Python). Ранее исключение просто проглатывалось в print,
+    и README-обещание «100% защита от процессов-зомби» тихо нарушалось.
+    """
     global _job
     if sys.platform != "win32":
-        return
+        return False
     try:
         import ctypes
         from ctypes import wintypes
@@ -175,8 +181,12 @@ def _assign_to_kill_job(proc) -> None:
             info.Basic.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             k32.SetInformationJobObject(_job, 9, ctypes.byref(info), ctypes.sizeof(info))
         k32.AssignProcessToJobObject(_job, int(proc._handle))
+        return True
     except Exception as e:
-        print(f"[llama] job object не создан: {e}")
+        # НЕ проглатываем молча: README обещает «100% защиту от зомби». Если
+        # привязка не удалась, пользователь должен видеть предупреждение.
+        print(f"[llama][warn] Job Object не создан — zombie-protection отключён: {e}")
+        return False
 
 
 # ============================================================
@@ -327,37 +337,82 @@ class LlamaServerTranslator:
 
         t_start = time.perf_counter()  # <-- 1. Засекаем старт
 
-        self._port = _free_port()
-        log_path = os.path.join(get_data_dir(), "llama_server.log")
-        self._log = open(log_path, "w", encoding="utf-8", errors="replace")
-        flags = _CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        cmd = self._build_cmd(model)
-        self._log.write("CMD: " + " ".join(cmd) + "\n")
-        self._log.flush()
-        self._proc = subprocess.Popen(
-            cmd, cwd=os.path.dirname(get_server_exe()),
-            stdout=self._log, stderr=subprocess.STDOUT, creationflags=flags)
-        _assign_to_kill_job(self._proc)
+        # D7: ранее был TOCTOU race — _free_port() освобождал сокет до того,
+        # как llama-server его биндил. Другой процесс мог занять порт, сервер
+        # падал, пользователь ждал до 180 сек и видел RuntimeError. Теперь
+        # ретраим с новым портом до MAX_PORT_RETRIES раз в пределах того же
+        # timeout-бюджета.
+        MAX_PORT_RETRIES = 3
+        last_error = ""
+        log_path = None
+        for attempt in range(MAX_PORT_RETRIES):
+            self._port = _free_port()
+            log_path = os.path.join(get_data_dir(), "llama_server.log")
+            self._log = open(log_path, "w", encoding="utf-8", errors="replace")
+            flags = _CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            cmd = self._build_cmd(model)
+            self._log.write(f"CMD (attempt {attempt + 1}/{MAX_PORT_RETRIES}): " + " ".join(cmd) + "\n")
+            self._log.flush()
+            self._proc = subprocess.Popen(
+                cmd, cwd=os.path.dirname(get_server_exe()),
+                stdout=self._log, stderr=subprocess.STDOUT, creationflags=flags)
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._proc.poll() is not None:
-                raise RuntimeError(
-                    f"llama-server завершился (код {self._proc.returncode}). "
+            # A3: Job Object теперь возвращает bool. Если False — zombie-protection
+            # нарушен, громко варним в лог (не падаем — сервер ещё может работать).
+            job_ok = _assign_to_kill_job(self._proc)
+            if not job_ok and sys.platform == "win32":
+                print("[llama][warn] Сервер запущен БЕЗ Job Object — "
+                      "при аварийном выходе ScreenTale возможен осиротевший процесс llama-server.exe")
+
+            # Каждая попытка ждёт максимум оставшийся timeout / число попыток,
+            # чтобы суммарный бюджет не превышал исходный timeout.
+            remaining = max(10.0, timeout - (time.perf_counter() - t_start))
+            per_attempt_budget = max(10.0, remaining / max(1, MAX_PORT_RETRIES - attempt))
+            deadline = time.monotonic() + per_attempt_budget
+            died_early = False
+            while time.monotonic() < deadline:
+                if self._proc.poll() is not None:
+                    # Сервер упал. Возможно, из-за занятого порта — пробуем другой.
+                    last_error = (
+                        f"llama-server завершился (код {self._proc.returncode}). "
+                        f"Смотри {log_path}")
+                    died_early = True
+                    break
+                try:
+                    with self._opener.open(self._url("/health"), timeout=2) as r:
+                        if r.status == 200:
+                            # <-- 2. Считаем время, когда сервер полностью готов
+                            elapsed = time.perf_counter() - t_start
+                            model_name = os.path.basename(model)
+                            print(f"[llama] Модель '{model_name}' загружена в VRAM и готова к работе за {elapsed:.2f} сек!")
+                            return
+                except (urllib.error.URLError, OSError):
+                    pass
+                time.sleep(0.4)
+
+            # Если health-чек прошёл — мы бы уже вышли по return выше.
+            # Иначе — закрываем процесс и пробуем снова с новым портом.
+            self.close()
+            if not died_early:
+                # Истёк per-attempt бюджет, сервер жив, но не отвечает на /health.
+                # Это вряд ли проблема порта — выходим с ошибкой.
+                last_error = (
+                    f"llama-server не отвечает на /health за {per_attempt_budget:.0f} сек. "
                     f"Смотри {log_path}")
-            try:
-                with self._opener.open(self._url("/health"), timeout=2) as r:
-                    if r.status == 200:
-                        # <-- 2. Считаем время, когда сервер полностью готов и ответил 200 OK
-                        elapsed = time.perf_counter() - t_start
-                        model_name = os.path.basename(model)
-                        print(f"[llama] Модель '{model_name}' загружена в VRAM и готова к работе за {elapsed:.2f} сек!")
-                        return
-            except (urllib.error.URLError, OSError):
-                pass
-            time.sleep(0.4)
+                # Всё же даём один дополнительный шанс с новым портом — вдруг
+                # health-чек блокировался старым подключением.
+                if attempt < MAX_PORT_RETRIES - 1:
+                    print(f"[llama] нет /health за {per_attempt_budget:.0f}с — пробуем другой порт")
+                    continue
+                break
+            else:
+                if attempt < MAX_PORT_RETRIES - 1:
+                    print(f"[llama] сервер упал (попытка {attempt + 1}) — пробуем другой порт")
+                    continue
+                break
+
         self.close()
-        raise RuntimeError("llama-server не успел запуститься за отведённое время")
+        raise RuntimeError(last_error or "llama-server не успел запуститься за отведённое время")
 
     def close(self) -> None:
         proc, self._proc = self._proc, None

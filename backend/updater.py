@@ -4,11 +4,10 @@ import json
 import os
 import subprocess
 import sys
-import threading
 import time
 import urllib.request
 
-from PySide6.QtCore import QObject, QRunnable, Signal
+from PySide6.QtCore import QRunnable, QThread, Signal
 
 from backend.config import APP_VERSION, get_app_dir, get_data_dir
 
@@ -47,6 +46,7 @@ class UpdateCheckTask(QRunnable):
         self._on_update_found = on_update_found
 
     def run(self):
+        # import time перенесён наверх модуля.
 
         for attempt in range(2):
             try:
@@ -94,8 +94,14 @@ class UpdateCheckTask(QRunnable):
                 print(f"[updater] Не удалось получить манифест: {e}")
 
 
-class UpdateDownloadWorker(QObject):
-    """Фоновое скачивание обновления с передачей процентов, проверка SHA-256 и запуск установки."""
+class UpdateDownloadWorker(QThread):
+    """Фоновое скачивание обновления с передачей процентов, проверка SHA-256 и запуск установки.
+
+    F3: ранее использовала threading.Thread и эмитила Qt-сигналы из не-Qt-потока.
+    Это работало только за счёт AutoConnection→QueuedConnection fallback, но
+    fragile: если ресивер уничтожен mid-download или main event loop stopped,
+    posted events dangle. Теперь — QThread как у AutoModeWorker/OcrWorker.
+    """
     progress = Signal(int, str)  # percent, label
     finished = Signal()
     failed = Signal(str)
@@ -104,11 +110,7 @@ class UpdateDownloadWorker(QObject):
         super().__init__()
         self.manifest_data = manifest_data
 
-    def start_download(self):
-        t = threading.Thread(target=self._run, daemon=True)
-        t.start()
-
-    def _run(self):
+    def run(self):
         try:
             download_url = self.manifest_data.get("download_url")
             expected_sha = self.manifest_data.get("sha256", "").strip().lower()

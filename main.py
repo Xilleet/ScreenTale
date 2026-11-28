@@ -349,10 +349,20 @@ class AppController(QObject):
 
     def _toggle_pause_auto(self):
         if not self._auto_active:
-            self.trans_win.show_translation("[Авто-режим не запущен]")
+            # B7: в inplace-режиме показ чат-окна с «[Авто-режим не запущен]»
+            # нарушает UX — чат должен быть скрыт. Варним только в режиме чата.
+            if self.settings.get("overlay_mode", "chat") == "chat":
+                self.trans_win.show_translation("[Авто-режим не запущен]")
+            else:
+                print("[auto] pause нажат в inplace-режиме, но авто-режим не запущен")
             return
 
         self._auto_paused = not self._auto_paused
+        # B7: set_paused_mode скрывает чат-окно — в inplace это нормально,
+        # но и InPlaceCanvas должен перестать рисовать свежие плашки во время паузы.
+        # Скрываем холст через clear(), чтобы активные плашки не висели «замороженными».
+        if self.settings.get("overlay_mode", "chat") == "inplace" and self._auto_paused:
+            self.inplace_canvas.clear()
         self.trans_win.set_paused_mode(self._auto_paused)
 
         if self._auto_paused:
@@ -368,7 +378,13 @@ class AppController(QObject):
     # ---------- хоткеи ----------
     def _on_hotkey(self, action):
         if action == "toggle_window":
-            self.trans_win.toggle_visible()
+            # B6: README говорит «(в режиме Чата)». Ранее toggle_visible
+            # срабатывал в любом режиме — в inplace это приводило к тому,
+            # что Ctrl+` показывал чат-окно, которое должно быть скрыто.
+            if self.settings.get("overlay_mode", "chat") == "chat":
+                self.trans_win.toggle_visible()
+            else:
+                vlog("[hotkey] toggle_window игнорируется в inplace-режиме")
         elif action == "single":
             self._start_selection()
         elif action == "auto":
@@ -597,10 +613,15 @@ class AppController(QObject):
         # 4. ОБРАБОТКА ОДИНОЧНОГО РЕЖИМА (Alt + Q / 1-Click)
         # ------------------------------------------------------------------
         mode = self.settings.get("overlay_mode", "chat")
-        
+
         # Окно-чат показываем ТОЛЬКО если активен режим 'chat'!
-        if mode != "inplace":
+        # J1: ранее `if mode != "inplace"` ловил любое не-inplace значение как
+        # chat (включая опечатки). Теперь — явная проверка chat; неизвестные
+        # режимы логируем, но не показываем окно (безопасное молчание).
+        if mode == "chat":
             self.trans_win.show_translation(text)
+        elif mode != "inplace":
+            vlog(f"[ctrl] неизвестный overlay_mode={mode!r}, перевод не показан в чате")
 
         if text.startswith("["):
             return
@@ -755,8 +776,15 @@ class AppController(QObject):
         if not self._auto_active or self._auto_bbox is None or self._auto_paused:
             return
         mode = self.settings.get("overlay_mode", "chat")
-        # Проверяем видимость окна чата ТОЛЬКО если мы в режиме чата
-        if mode != "inplace" and (not self.trans_win.isVisible() or self.trans_win.force_hidden):
+        # Проверяем видимость окна чата ТОЛЬКО если мы в режиме чата.
+        # J1: ранее `mode != "inplace"` ловил любые не-inplace значения. Теперь
+        # явная проверка chat; в inplace — продолжаем OCR (чат скрыт нормально).
+        # Для неизвестных режимов — безопасный no-op с диагностикой.
+        if mode == "chat":
+            if not self.trans_win.isVisible() or self.trans_win.force_hidden:
+                return
+        elif mode != "inplace":
+            vlog(f"[ctrl] _on_region_changed: неизвестный overlay_mode={mode!r}, пропуск")
             return
         self.ocr.read(self._auto_bbox, context="auto")
 
@@ -904,10 +932,16 @@ class AppController(QObject):
                             clean_trans = re.sub(r"^\[1\]\s*", "", translation).strip()
                             self.inplace_canvas.display_structured_translation(
                                 clusters, [clean_trans], text_opacity=text_op)
-                else:
+                elif mode == "chat":
+                    # J1: явная проверка chat вместо неявного else. Опечатки в
+                    # overlay_mode больше не покажут перевод в чате автоматически.
                     self.inplace_canvas.clear()
                     self.inplace_canvas.hide()
                     self.trans_win.show_translation(f"({timestamp}) {translation}")
+                else:
+                    vlog(f"[ctrl] неизвестный overlay_mode={mode!r}, перевод не показан")
+                    self.inplace_canvas.clear()
+                    self.inplace_canvas.hide()
 
             del self._pending_translations[next_seq]
             self._last_shown_seq = next_seq
@@ -1038,6 +1072,18 @@ class AppController(QObject):
         elif key == "streamer_mode":
             # True = скрыть от записи, False = разрешить скриншоты или в запись видео
             self.inplace_canvas.set_capture_visibility(not bool(value))
+        elif key == "window_pinned":
+            # C1+C2: Settings UI эмитит window_pinned с WindowInfo | None.
+            # Ранее _on_setting_changed не обрабатывал этот ключ — pin через
+            # «Настройки → Привязать к игре» показывал зелёную галку в UI,
+            # но self._pinned_hwnd оставался 0 и _track_pinned_window не работал.
+            # Теперь контроллер синхронизирует своё состояние напрямую из сигнала.
+            if value is None:
+                self._pinned_hwnd = 0
+                self._pinned_exe = ""
+            else:
+                self._pinned_hwnd = getattr(value, "hwnd", 0)
+                self._pinned_exe = getattr(value, "exe_name", "")
         elif key == "overlay_mode":
             if value == "inplace":
                 # Переключились на In-Place: окно чата тихо прячется
@@ -1246,7 +1292,9 @@ class AppController(QObject):
         self._update_worker.progress.connect(self._on_update_progress)
         self._update_worker.failed.connect(self._on_update_failed)
         self._update_worker.finished.connect(self._on_update_ready_to_restart)
-        self._update_worker.start_download()
+        # F3: QThread.start() вместо старого start_download() (который плодил
+        # threading.Thread и эмитил Qt-сигналы из не-Qt-потока).
+        self._update_worker.start()
 
     def _on_update_progress(self, percent: int, label: str):
         self.settings_win.update_banner.update_progress(percent, label)

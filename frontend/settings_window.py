@@ -2237,8 +2237,10 @@ class SettingsWindow(QWidget):
                     background: rgba(74, 222, 128, 0.16);
                 }
             """)
-            self.settings.set("pinned_exe", win.exe_name, save=False)
-            self.settings.set("pinned_hwnd", win.hwnd, save=False)
+            # C1+C2: ранее писали pinned_exe/pinned_hwnd в SettingsManager
+            # через set(save=False) — это создавало фантомные ключи вне схемы
+            # (DEFAULTS их не объявляет, _load их не читает). Теперь контроллер
+            # ловит window_pinned и сам обновляет self._pinned_hwnd/exe.
             self.settings.changed.emit("window_pinned", win)
             self.toast.show_toast(t("toast.pinned_to", "Привязано к окну: {exe}").replace("{exe}", win.exe_name))
         else:
@@ -2247,8 +2249,6 @@ class SettingsWindow(QWidget):
             self.btn_game_profile.setStyleSheet("")
             self.btn_game_profile.set_pinned(False)
             
-            self.settings.set("pinned_exe", "", save=False)
-            self.settings.set("pinned_hwnd", 0, save=False)
             self.settings.changed.emit("window_pinned", None)
             self.toast.show_toast(t("toast.pin_reset", "Привязка сброшена (режим всего экрана)"))
 

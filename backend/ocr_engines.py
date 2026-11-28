@@ -233,6 +233,12 @@ class RapidOcrEngine(BaseOcrEngine):
     def load(self, use_gpu: bool = False, lang: str = "en") -> bool:
         if not HAS_RAPIDOCR or RapidOCR is None:
             return False
+        # D5: ранее load() безусловно пересоздавал RapidOCR() на каждом вызове,
+        # хотя ocr.py:237-238 прямо комментирует, что re-init бесполезен
+        # (RapidOCR не зависит от lang). Кэшируем — если _engine уже жив,
+        # пропускаем дорогую инициализацию ONNX-сессии.
+        if self._engine is not None:
+            return True
         try:
             self._engine = RapidOCR()
             return True
@@ -243,11 +249,15 @@ class RapidOcrEngine(BaseOcrEngine):
     def set_direction(self, direction: str) -> None:
         self.direction = direction
 
-    def read_detailed(self, img: Image.Image, direction: str | None = None) -> tuple[str, list[dict]]:
+    def read_detailed(self, img: Image.Image) -> tuple[str, list[dict]]:
+        # D1: ранее read/read_detailed добавляли параметр direction, которого
+        # нет в базовом BaseOcrEngine.read_detailed(self, img) — это нарушало
+        # LSP. Direction хранится в self.direction и меняется через
+        # set_direction() — единый контракт для всех движков.
         if self._engine is None:
             return "", []
 
-        dir_mode = direction or self.direction
+        dir_mode = self.direction
         img_np = np.array(img.convert("RGB"))
 
         try:
@@ -290,8 +300,9 @@ class RapidOcrEngine(BaseOcrEngine):
             vlog(f"[rapidocr] сбой распознавания: {e}")
             return "", []
 
-    def read(self, img: Image.Image, direction: str | None = None) -> str:
-        full_text, _ = self.read_detailed(img, direction)
+    def read(self, img: Image.Image) -> str:
+        # D1: убран параметр direction — LSP с BaseOcrEngine.read(self, img).
+        full_text, _ = self.read_detailed(img)
         return full_text
 
     def _sort_tategaki(self, result: list) -> str:

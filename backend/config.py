@@ -47,7 +47,9 @@ DEFAULTS = {
     "verbose_log": False,
     "update_snooze_until": "",
     "overlay_mode": "chat",
-    "welcome_completed": False,
+    # welcome_completed удалён — нигде не читался. main.py:291 использует
+    # is_first_run (по факту существования config.json), что делает этот ключ
+    # мёртвой схемой.
     "streamer_mode": False,
     "ui_lang": "auto",  # auto | en | ru (или любой код из locales/)
     "hotkeys": {
@@ -159,10 +161,12 @@ class SettingsManager(QObject):
         # NOTE: update_snooze_until должен быть в этом списке, иначе snooze
         # пишется в config.json (main.py:1210), но не читается обратно и баннер
         # обновления возвращается после каждого перезапуска.
+        # welcome_completed убран из allowlist — ключ удалён из DEFAULTS (C3),
+        # а старые config.json с этим ключом просто игнорируются.
         for key in ("theme", "font_size", "frame_opacity", "text_opacity",
                     "adaptive_opacity",
                     "gpu", "auto_copy", "auto_delay_ms", "verbose_log",
-                    "ocr_engine", "ocr_direction", "welcome_completed",
+                    "ocr_engine", "ocr_direction",
                     "selected_gguf", "src_lang", "dst_lang", "recent_pairs",
                     "cpu_threads", "streamer_mode", "ui_lang", "overlay_mode",
                     "update_snooze_until"):

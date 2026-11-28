@@ -194,10 +194,14 @@ class InPlaceCanvas(QWidget):
         self._fade_timer.timeout.connect(self.fade_out_and_clear)
 
         # закрытие по правой кнопке мыши
+        # F5: ранее таймер крутился каждые 25мс бесконечно, даже когда холст
+        # скрыт и active_blocks пуст. Теперь стартуем по требованию из
+        # display_structured_translation и останавливаем в clear() /
+        # fade_out_and_clear — экономим CPU в простое.
         self._mouse_timer = QTimer(self)
         self._mouse_timer.setInterval(25)
         self._mouse_timer.timeout.connect(self._check_mouse_actions)
-        self._mouse_timer.start()
+        # НЕ стартуем здесь — запустится при первой показанной плашке.
 
         # Окно видно глазам, но для захвата экрана (OCR / ImageGrab) оно невидимо!
         self.set_capture_visibility(False)
@@ -299,18 +303,33 @@ class InPlaceCanvas(QWidget):
 
         print(f"[inplace] Отрисовано независимых плашек: {len(new_blocks)}")
         self.active_blocks = new_blocks
-        
+
         self.setWindowOpacity(0.0)
         self.show()
         self.raise_()
         self.update()
 
+        # F4: ранее каждый display_structured_translation создавал новый
+        # QPropertyAnimation(self, ...) и присваивал self._anim_in. Старый
+        # экземпляр оставался жив как Qt-child self и с dangling
+        # finished.connect(...) closure. Явно deleteLater() старую анимацию.
+        old_anim = getattr(self, "_anim_in", None)
+        if old_anim is not None:
+            try:
+                old_anim.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            old_anim.deleteLater()
         self._anim_in = QPropertyAnimation(self, b"windowOpacity")
         self._anim_in.setDuration(180)
         self._anim_in.setStartValue(0.0)
         self._anim_in.setEndValue(1.0)
         self._anim_in.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim_in.start()
+
+        # F5: запускаем mouse_timer только когда есть что слушать.
+        if not self._mouse_timer.isActive():
+            self._mouse_timer.start()
 
         self._fade_timer.start(12000)
 
@@ -336,6 +355,14 @@ class InPlaceCanvas(QWidget):
     def clear(self):
         """Очистить холст."""
         self.active_blocks.clear()
+        # F5: останавливаем mouse_timer в простое — некого слушать.
+        # _fade_timer останавливаем тоже, иначе он мог бы стрельнуть
+        # fade_out_and_clear через 12с после явного clear() и создать
+        # лишний _anim_out.
+        if self._mouse_timer.isActive():
+            self._mouse_timer.stop()
+        if self._fade_timer.isActive():
+            self._fade_timer.stop()
         self.update()
 
     def set_capture_visibility(self, visible_to_capture: bool):
@@ -422,15 +449,25 @@ class InPlaceCanvas(QWidget):
         """Плавное растворение плашек перед очисткой (вызывается по ПКМ)."""
         if not self.active_blocks or getattr(self, "_is_fading_out", False):
             return
-            
+
         self._is_fading_out = True
         self._fade_timer.stop()
+
+        # F4: deleteLater() старую _anim_out, иначе накапливаются Qt-children
+        # с неотвязанными finished.connect(_on_hidden) closures.
+        old_anim = getattr(self, "_anim_out", None)
+        if old_anim is not None:
+            try:
+                old_anim.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            old_anim.deleteLater()
 
         self._anim_out = QPropertyAnimation(self, b"windowOpacity")
         self._anim_out.setDuration(120)  # Быстрое и мягкое затухание
         self._anim_out.setStartValue(self.windowOpacity())
         self._anim_out.setEndValue(0.0)
-        
+
         def _on_hidden():
             self.clear()
             self._is_fading_out = False

@@ -219,7 +219,22 @@ def get_active_window() -> WindowInfo | None:
 
         exe_path = get_window_exe_path(hwnd)
         exe = os.path.basename(exe_path) if exe_path else ""
-        rect = get_window_exact_rect(hwnd) or QRect(0, 0, 1920, 1080)
+        # J12: ранее фолбэк был hardcoded QRect(0, 0, 1920, 1080) — на 4K или
+        # мультимониторных сетапах это давало wildly wrong регион. Берём
+        # геометрию primary screen через Qt (Qt уже инициализирован к моменту
+        # вызова get_active_window — это обработчик клика пользователя).
+        rect = get_window_exact_rect(hwnd)
+        if rect is None:
+            try:
+                from PySide6.QtGui import QGuiApplication
+                screen = QGuiApplication.primaryScreen()
+                if screen is not None:
+                    g = screen.geometry()
+                    rect = QRect(g.x(), g.y(), max(1, g.width()), max(1, g.height()))
+                else:
+                    rect = QRect(0, 0, 1920, 1080)  # последний фолбэк
+            except Exception:
+                rect = QRect(0, 0, 1920, 1080)
 
         return WindowInfo(hwnd=hwnd, title=title, exe_name=exe, exe_path=exe_path, rect=rect)
 

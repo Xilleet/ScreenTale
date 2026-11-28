@@ -332,8 +332,12 @@ class OcrWorker(QThread):
                 easy_engine.load(use_gpu=use_gpu, lang="en")
                 self._engine = easy_engine
                 self._active_engine_name = "easyocr"
+                # D6: ранее CPU-режим эмитил state "off" — по контракту
+                # ok/busy/off/error "off" значит «отключен», но EasyOCR на CPU
+                # полностью работает. Заменяем на "ok" — StatusPill теперь
+                # показывает его как активный движок.
                 self.state_changed.emit(
-                    "ok" if use_gpu else "off",
+                    "ok",
                     "EasyOCR: GPU ускорение" if use_gpu else "EasyOCR: CPU режим",
                 )
                 self.gpu_result.emit(True, use_gpu, "")
